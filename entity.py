@@ -99,30 +99,42 @@ class ItemFrame:
   def WaitUntilPut(self):
     """何かしらのアイテムが入れられるまで待機
     """
-    return LoopUntil(WaitFunctionCall(ItemFrame.onIn) + Run(self.selfselector.IfEntity()))
+    func = Function()
+    ItemFrame.onIn += self.selfselector.IfEntity() + func.call()
+    return WaitFunctionCall(func)
 
   def WaitUntilPutItem(self, item:Item):
     """特定のアイテムが入れられるまで待機
     """
-    return LoopUntil(WaitFunctionCall(ItemFrame.onIn) + Run(self.selfselector.filter(nbt=self._getnbt(item)).IfEntity()))
+    func = Function()
+    ItemFrame.onIn += self.selfselector.filter(nbt=self._getnbt(item)).IfEntity() + func.call()
+    return WaitFunctionCall(func)
 
   def WaitUntilPick(self):
     """中のアイテムを失うまで待機
     """
-    return LoopUntil(WaitFunctionCall(ItemFrame.onOut) + Run(self.selfselector.IfEntity()))
+    func = Function()
+    ItemFrame.onOut += self.selfselector.IfEntity() + func.call()
+    return WaitFunctionCall(func)
 
   def WaitUntilRotate(self):
     """回転するまで待機
     """
-    return LoopUntil(WaitFunctionCall(ItemFrame.onRot) + Run(self.selfselector.IfEntity()))
+    func = Function()
+    ItemFrame.onRot += self.selfselector.IfEntity() + func.call()
+    return WaitFunctionCall(func)
 
   def WaitUntilRotateTo(self,rotation:Literal[0,1,2,3,4,5,6,7]):
     """特定の角度になるまで待機
     """
-    return LoopUntil(WaitFunctionCall(ItemFrame.onRot) + Run(self.selfselector.filter(nbt=self._getnbt(rotation=rotation)).IfEntity()))
+    func = Function()
+    ItemFrame.onRot += self.selfselector.filter(nbt=self._getnbt(rotation=rotation)).IfEntity() + func.call()
+    return WaitFunctionCall(func)
 
   def WaitUntilMatchState(self,item:Item,rotation:Literal[0,1,2,3,4,5,6,7]):
     """特定のアイテムが入った状態で特定の角度になるまで待機
     """
-    change = ParallelFirst(WaitFunctionCall(ItemFrame.onRot),WaitFunctionCall(ItemFrame.onIn))
-    return LoopUntil(change + Run(self.selfselector.filter(nbt=self._getnbt(item,rotation)).IfEntity()))
+    func = Function()
+    ItemFrame.onRot += self.selfselector.filter(nbt=self._getnbt(item,rotation)).IfEntity() + func.call()
+    ItemFrame.onIn += self.selfselector.filter(nbt=self._getnbt(item,rotation)).IfEntity() + func.call()
+    return WaitFunctionCall(func)

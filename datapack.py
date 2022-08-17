@@ -738,7 +738,7 @@ class Datapack(metaclass=_DatapackMeta):
 }}""")
 
     for f in FunctionTag.functiontags:
-      # 呼び出し構造の解決
+      # function.taggedをTrueにする
       f.check_call_relation()
 
     for f in Function.functions:
@@ -948,7 +948,10 @@ class Function:
     return _ScheduleClearCommand(self)
 
   def _isempty(self):
-    return len(self.commands) == 0
+    for cmd in self.commands:
+      if not (isinstance(cmd,_FunctionCommand) and cmd.holder._isempty()):
+        return False
+    return True
 
   def _issingle(self):
     return len(self.commands) == 1
