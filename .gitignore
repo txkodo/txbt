@@ -1,6 +1,4 @@
 __pycache__
-/*.py
-!/datapack.py
-!/blockList.py
-!/itemList.py
+/test.py
+/event.py
 /extraction data/
