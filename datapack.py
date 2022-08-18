@@ -284,7 +284,7 @@ class Command:
     return Command(f'reload')
 
   @staticmethod
-  def Function(path:McPath|str,istag:bool=True):
+  def Function(path:McPath|str,istag:bool=False):
     if istag:
       return Command(f'function {McPath(path).tag_str}')
     else:

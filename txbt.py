@@ -267,6 +267,7 @@ class IEvent(metaclass=ABCMeta):
 
   def export_server(self,enter_path:str|McPath):
     IEvent.mode = _ExportMode.SERVER
+    ScoreboardIterator.main = ScoreboardIterator()
 
     enter_path = McPath(enter_path)
 
