@@ -39,7 +39,7 @@ class Mcpath:
   @property
   def namespace(self):
     return self._namespace
-  
+
   @property
   def parts(self):
     return self._parts
@@ -598,7 +598,7 @@ class IDatapackLibrary:
     raise NotImplementedError
 
 class _DatapackMeta(type):
-  _default_namespace:str = 'pydp'
+  _default_namespace:str = 'minecraft'
 
   @property
   def default_namespace(cls):
@@ -610,8 +610,8 @@ class _DatapackMeta(type):
       raise ValueError(f'default_namespace argument must match /[0-9a-z_-]+/ not "{value}"')
     cls._default_namespace = value
 
-  _default_folder:str = ''
- 
+  _default_folder:str = 'txbt/'
+
   @property
   def default_folder(cls):
     return cls._default_folder
@@ -621,7 +621,7 @@ class _DatapackMeta(type):
     if not re.fullmatch(r'([0-9a-z_\.-]+/)*',value):
       raise ValueError(fr'default_folder argument must match /([0-9a-z_\.-]+/)*/ not "{value}"')
     cls._default_folder = value
-  
+
   _description:str|None=None
   @property
   def description(cls):
@@ -954,6 +954,8 @@ class Function:
 
   @property
   def expression(self) -> str:
+    if self.namespace == 'minecraft':
+      return self.name
     return f"{self.namespace}:{self.name}"
 
   def call(self) -> Command:
