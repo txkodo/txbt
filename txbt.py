@@ -7,6 +7,7 @@ from typing_extensions import Self
 from datapack import Byte, Compound, ConditionSubCommand, FunctionTag, OhMyDat, Scoreboard, Selector, Command, Function, Objective, StorageNbt, Value
 from id import gen_id
 from library.on_install import OnInstall
+from mcpath import McPath
 
 
 # class TxBtDat(IDatapackLibrary):
@@ -125,7 +126,7 @@ class IEvent(metaclass=ABCMeta):
   _abort:Function
   id:str
 
-  intidata = Function('txbt', 'init_unsafe', description='''txbtで生成されたストレージの内容を空にする。
+  intidata = Function('txbt:init_unsafe', description='''txbtで生成されたストレージの内容を空にする。
 データパックを再生成した際に実行することで、不要なデータを一掃できる。
 イベントの実行中に起動すると壊れるので実行するときは気を付けること。''')
   intidata += _storage[_flags_path].remove()
@@ -264,21 +265,21 @@ class IEvent(metaclass=ABCMeta):
   def main_server(self,func:Function,abort:Function,tick: Function,init:Function,resultless:bool) -> Function:
     raise NotImplementedError
 
-  def export_server(self,enter_path:str):
+  def export_server(self,enter_path:str|McPath):
     IEvent.mode = _ExportMode.SERVER
+
+    enter_path = McPath(enter_path)
 
     eventid = IEvent.nextId()
 
     IEvent._flags = IEvent._storage[_flags_path][eventid]
 
-    enter_namespace,enter_name = splitMcpath(enter_path,True)
-
-    main = Function(enter_namespace,enter_name+"start")
+    main = Function(enter_path/'start')
     main.description = """イベントを初期化して開始する"""
 
-    abort = Function(enter_namespace,enter_name+"abort")
+    abort = Function(enter_path/'abort')
 
-    init = Function(enter_namespace,enter_name+"init")
+    init = Function(enter_path/'init')
     init.description = """イベントを初期化する"""
 
     _init = Function()
@@ -297,19 +298,19 @@ class IEvent(metaclass=ABCMeta):
 
     exit += IEvent._flags.remove()
 
-  def export_entity(self,enter_path:str,objectiveIterator:ScoreboardIterator):
+  def export_entity(self,enter_path:str|McPath,objectiveIterator:ScoreboardIterator):
     IEvent.mode = _ExportMode.ENTITY
     ScoreboardIterator.main = objectiveIterator
 
-    enter_namespace,enter_name = splitMcpath(enter_path,True)
+    enter_path = McPath(enter_path)
 
-    main = Function(enter_namespace,enter_name+"start")
+    main = Function(enter_path/"start")
     main.description = """イベントを初期化して開始する
 該当エンティティとして実行すること"""
 
-    abort = Function(enter_namespace,enter_name+"abort")
+    abort = Function(enter_path/"abort")
 
-    init = Function(enter_namespace,enter_name+"init")
+    init = Function(enter_path/"init")
     init.description = """イベントを初期化する
 該当エンティティとして実行すること"""
 

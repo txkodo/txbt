@@ -29,6 +29,6 @@ class ItemFrameHook(IDatapackLibrary):
     else:
       return Command.CallFunc('ifh:api/none')
 
-  OnOut = FunctionTag('ifh','on_out')
-  OnIn  = FunctionTag('ifh','on_in')
-  OnRot  = FunctionTag('ifh','on_rot')
+  OnOut = FunctionTag('ifh:on_out')
+  OnIn  = FunctionTag('ifh:on_in')
+  OnRot  = FunctionTag('ifh:on_rot')

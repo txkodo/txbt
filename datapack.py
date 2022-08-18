@@ -12,6 +12,8 @@ import re
 import shutil
 import subprocess
 
+from mcpath import McPath
+
 def _float_to_str(f:float):
   return format(Decimal.from_float(f),'f')
 
@@ -27,39 +29,6 @@ def _gen_id(length:int=8,prefix:str='',suffix:str='',upper:bool=True,lower:bool=
   if number:chars.extend(_id_number)
   maxidx = len(chars) - 1
   return prefix + ''.join(chars[randint(0,maxidx)] for _ in range(length)) + suffix
-
-class Mcpath:
-  def __init__(self,mcpath: str) -> None:
-    namespace, name = mcpath.split(':') if ':' in mcpath else ("", mcpath)
-    if not namespace:
-      namespace = 'minecraft'
-    self._namespace = namespace
-    self._parts = name.split('/')
-
-  @property
-  def namespace(self):
-    return self._namespace
-
-  @property
-  def parts(self):
-    return self._parts
-
-  @property
-  def name(self):
-    return '/'.join(self._parts)
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 class Position:
   class IPosition(metaclass=ABCMeta):
@@ -315,6 +284,13 @@ class Command:
     return Command(f'reload')
 
   @staticmethod
+  def Function(path:McPath|str,istag:bool=True):
+    if istag:
+      return Command(f'function {McPath(path).tag_str}')
+    else:
+      return Command(f'function {McPath(path).str}')
+
+  @staticmethod
   def Say(content:str):
     return Command(f'say {content}')
 
@@ -488,25 +464,24 @@ class FunctionTag:
   tick:FunctionTag
   load:FunctionTag
   functiontags:list[FunctionTag] = []
-  def __init__(self,namespace:str,name:str,export_if_empty:bool=True) -> None:
+  def __init__(self,path:str|McPath,export_if_empty:bool=True) -> None:
     FunctionTag.functiontags.append(self)
-    self.namespace = namespace
-    self.name = name
+    self.path = McPath(path)
     self.export_if_empty = export_if_empty
-    self.functions:list[Function|ExistFunction] = []
+    self.functions:list[Function|str|McPath] = []
 
   @property
   def expression(self) -> str:
-    return f"#{self.namespace}:{self.name}"
+    return self.path.tag_str
 
   def call(self) -> Command:
     return _FunctionTagCommand(self)
 
   @property
   def expression_without_hash(self) -> str:
-    return f"{self.namespace}:{self.name}"
+    return self.path.str
 
-  def append(self,function:Function|ExistFunction):
+  def append(self,function:Function|str|McPath):
     if isinstance(function,Function):
       function.tagged = True
     self.functions.append(function)
@@ -519,7 +494,7 @@ class FunctionTag:
         f.within.add(self)
 
   def export(self,path:Path) -> None:
-    path = path/f"data/{self.namespace}/tags/functions/{self.name}.json"
+    path = self.path.function_tag(path)
     values:list[str] = []
     for f in self.functions:
       if isinstance(f,Function) and f.callstate is _FuncState.EXPORT:
@@ -537,8 +512,8 @@ class FunctionTag:
       path.parent.mkdir(parents=True,exist_ok=True)
       path.write_text(json.dumps({"values":values}),encoding='utf8')
 
-FunctionTag.tick = FunctionTag('minecraft','tick',False)
-FunctionTag.load = FunctionTag('minecraft','load',False)
+FunctionTag.tick = FunctionTag('minecraft:tick',False)
+FunctionTag.load = FunctionTag('minecraft:load',False)
 
 class IDatapackLibrary:
   """
@@ -598,29 +573,15 @@ class IDatapackLibrary:
     raise NotImplementedError
 
 class _DatapackMeta(type):
-  _default_namespace:str = 'minecraft'
+  _default_path= McPath('minecraft:txbt')
 
   @property
-  def default_namespace(cls):
-    return cls._default_namespace
+  def default_path(cls):
+    return cls._default_path
 
-  @default_namespace.setter
-  def default_namespace(cls,value:str):
-    if not re.fullmatch('[0-9a-z_-]+',value):
-      raise ValueError(f'default_namespace argument must match /[0-9a-z_-]+/ not "{value}"')
-    cls._default_namespace = value
-
-  _default_folder:str = 'txbt/'
-
-  @property
-  def default_folder(cls):
-    return cls._default_folder
-
-  @default_folder.setter
-  def default_folder(cls,value:str):
-    if not re.fullmatch(r'([0-9a-z_\.-]+/)*',value):
-      raise ValueError(fr'default_folder argument must match /([0-9a-z_\.-]+/)*/ not "{value}"')
-    cls._default_folder = value
+  @default_path.setter
+  def default_path(cls,value:McPath|str):
+    cls._default_path = McPath(value)
 
   _description:str|None=None
   @property
@@ -769,22 +730,6 @@ class Datapack(metaclass=_DatapackMeta):
       pathstrs.append(str(relpath))
     pydptxt.write_text('\n'.join(pathstrs))
 
-class ExistFunction:
-  def __init__(self,namespace:str,name:str) -> None:
-    """
-    既に存在するmcfunctionを表すクラス
-
-    mcfunctionを新規作成する場合はFunctionクラスを使うこと
-    """
-    self.namespace = namespace
-    self.name = name
-  
-  def call(self):
-    return Command(f'function {self.expression}')
-
-  @property
-  def expression(self) -> str:
-    return f"{self.namespace}:{self.name}"
 
 class _FuncState(Enum):
   NEEDLESS = auto()
@@ -872,27 +817,22 @@ class Function:
   default_access_modifier:FunctionAccessModifier = FunctionAccessModifier.API
 
   @overload
-  def __init__(self,namespace:str,name:str,access_modifier:FunctionAccessModifier|None=None,description:str|None=None,delete_on_regenerate:bool=True,*_,commands:None|list[Command]=None) -> None:pass
+  def __init__(self,path:str|McPath,access_modifier:FunctionAccessModifier|None=None,description:str|None=None,delete_on_regenerate:bool=True,*_,commands:None|list[Command]=None) -> None:pass
   @overload
-  def __init__(self,namespace:str,name:str,*_,commands:None|list[Command]=None) -> None:pass
+  def __init__(self,path:str|McPath,*_,commands:None|list[Command]=None) -> None:pass
   @overload
   def __init__(self,*_,commands:None|list[Command]=None) -> None:pass
-  def __init__(self,namespace:str|None=None,name:str|None=None,access_modifier:FunctionAccessModifier|None=None,description:str|None=None,delete_on_regenerate:bool=True,*_,commands:None|list[Command]=None) -> None:
-    if namespace is not None and not re.fullmatch('[0-9a-z_-]+',namespace):
-      raise ValueError(f'namespace argument must match "a" "a0" "a_b-" not "{namespace}"')
+  def __init__(self,path:str|McPath|None=None,access_modifier:FunctionAccessModifier|None=None,description:str|None=None,delete_on_regenerate:bool=True,*_,commands:None|list[Command]=None) -> None:
 
-    if name is not None and not re.fullmatch(r'([0-9a-z_\.-]+/)*([0-9a-z_\.-]+)?',name):
-      raise ValueError(f'name argument must like "" "a" "a1/b.1" "a_/b-/" not "{name}"')
 
     self.delete_on_regenerate = delete_on_regenerate
     
     self.functions.append(self)
     self.commands:list[Command] = [*commands] if commands else []
-    self._namespace = namespace
-    self._name = name
+    self._path = None if path is None else McPath(path)
     self._children:set[Function] = set()
 
-    self._hasname = name is not None
+    self._hasname = self._path is not None
     self._scheduled = False
     self.tagged = False
     self.subcommanded = False
@@ -912,32 +852,16 @@ class Function:
         access_modifier = FunctionAccessModifier.WITHIN
     self.access_modifier = access_modifier
 
-  def set_name(self,namespace:str,name:str):
-    if self._hasname:
-      raise ValueError('cannot reset function name')
-
-    if namespace is not None and not re.fullmatch('[0-9a-z_-]+',namespace):
-      raise ValueError(f'namespace argument must match "a" "a0" "a_b-" not "{namespace}"')
-
-    if name is not None and not re.fullmatch(r'([0-9a-z_\.-]+/)*([0-9a-z_\.-]+)?',name):
-      raise ValueError(f'name argument must like "" "a" "a1/b.1" "a_/b-/" not "{name}"')
-
-    self._namespace = namespace
-    self._name = name
+  def set_path(self,path:str|McPath):
+    self._path = McPath(path)
     self._hasname = True
 
   @property
-  def namespace(self) -> str:
-    if self._namespace is None:
-      self._namespace = Datapack.default_namespace
-    return self._namespace
+  def path(self) -> McPath:
+    if self._path is None:
+      self._path = Datapack.default_path/self.nextPath()
+    return self._path
 
-  @property
-  def name(self) -> str:
-    if self._name is None:
-      self._name = Datapack.default_folder+self.nextPath()
-    return self._name
-  
   def __iadd__(self,value:str|Command):
     match value:
       case str():
@@ -954,9 +878,7 @@ class Function:
 
   @property
   def expression(self) -> str:
-    if self.namespace == 'minecraft':
-      return self.name
-    return f"{self.namespace}:{self.name}"
+    return self.path.str
 
   def call(self) -> Command:
     return _FunctionCommand(self)
@@ -1055,7 +977,7 @@ class Function:
         commands.append(c.export())
 
   def export_function(self,path:Path,commands:list[str]):
-    path = path/f"data/{self.namespace}/functions/{self.name}.mcfunction"
+    path = self.path.function(path)
 
     paths:list[Path] = []
     _path = path
@@ -1063,11 +985,8 @@ class Function:
       paths.append(_path)
       _path = _path.parent
 
-    if paths and not self.delete_on_regenerate:
-      # もともとあったことにする
-      paths.pop(0)
-
-    Datapack.created_paths.extend(reversed(paths))
+    if self.delete_on_regenerate:
+      Datapack.created_paths.extend(reversed(paths))
 
     path.parent.mkdir(parents=True,exist_ok=True)
 

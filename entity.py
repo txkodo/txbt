@@ -3,7 +3,7 @@ from typing import Literal
 from datapack import Command, Byte, Compound, Selector, INbt, Item, List, Function, Position, Str, Value
 from id import gen_id
 from library.item_frame_hook import ItemFrameHook
-from txbt import IEvent, InitAbort, LoopUntil, ParallelFirst, Run, WaitFunctionCall
+from txbt import IEvent, InitAbort, Run, WaitFunctionCall
 
 class ItemFrame:
   onOut:Function

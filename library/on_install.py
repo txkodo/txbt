@@ -1,6 +1,6 @@
 from pathlib import Path
 from random import randint
-from datapack import Command, ExistFunction, Function, FunctionTag, IDatapackLibrary, Selector, StorageNbt, Str
+from datapack import Command, Function, FunctionTag, IDatapackLibrary, Selector, StorageNbt, Str
 
 _id_upper = tuple(map(chr, range(ord('A'), ord('Z')+1)))
 _id_lower = tuple(map(chr, range(ord('a'), ord('z')+1)))
@@ -33,7 +33,7 @@ class OnInstall(IDatapackLibrary):
     build_nbt = StorageNbt('install:')['build_ids'][datapack_id, Str]
 
     # installの解決
-    cls.install_func.set_name('install',f'{datapack_id}/install')
+    cls.install_func.set_path(f'install:{datapack_id}/install')
     load = Function()
     load += build_nbt.notMatch(Str(build_id)) + cls.install_func.call()
     cls.install_func += build_nbt.set(Str(build_id))
@@ -43,7 +43,7 @@ class OnInstall(IDatapackLibrary):
     cls._uninstall_all_func
 
     cls.uninstall_func += Command.Tellraw(Selector.A(),f"[{datapack_id}] uninstalled build_id={build_id}")
-    cls.uninstall_func.set_name('install',f'{datapack_id}/uninstall/{build_id}')
+    cls.uninstall_func.set_path(f'install:{datapack_id}/uninstall/{build_id}')
     cls.uninstall_func.delete_on_regenerate = False
 
     # uninstall_all
@@ -53,10 +53,10 @@ class OnInstall(IDatapackLibrary):
         if func.suffix == '.mcfunction':
           if func.stem == build_id:
             raise ValueError(f'build_id {build_id} is not unique id')
-          cls._uninstall_all_func += build_nbt.isMatch(Str(func.stem)) + ExistFunction('install',f'{datapack_id}/uninstall/{func.stem}').call()
+          cls._uninstall_all_func += build_nbt.isMatch(Str(func.stem)) + Command.Function(f'install:{datapack_id}/uninstall/{func.stem}')
 
     # uninstallの解決
-    uninstall_func = Function('install',f'{datapack_id}/uninstall')
+    uninstall_func = Function(f'install:{datapack_id}/uninstall')
 
     uninstall_func += build_nbt.isMatch(Str(build_id)) + cls.uninstall_func.call()
 

@@ -8,7 +8,7 @@ from datapack import Command, Selector, Function, FunctionTag, INbt, List, Posit
 _summoned_tag = '__summon__'
 _on_summon_tag = '__on_summon__'
 
-summon = FunctionTag('minecraft','summon')
+summon = FunctionTag('minecraft:summon')
 """
 召喚時トリガーのファンクションタグ
 実行者は召喚されたエンティティ
