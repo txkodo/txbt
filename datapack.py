@@ -493,7 +493,7 @@ class FunctionTag:
     self.namespace = namespace
     self.name = name
     self.export_if_empty = export_if_empty
-    self.functions:list[Function] = []
+    self.functions:list[Function|ExistFunction] = []
 
   @property
   def expression(self) -> str:
@@ -506,21 +506,23 @@ class FunctionTag:
   def expression_without_hash(self) -> str:
     return f"{self.namespace}:{self.name}"
 
-  def append(self,function:Function):
-    function.tagged = True
+  def append(self,function:Function|ExistFunction):
+    if isinstance(function,Function):
+      function.tagged = True
     self.functions.append(function)
 
   def check_call_relation(self):
     """呼び出し先のファンクションにタグから呼ばれることを伝える"""
     for f in self.functions:
-      f.tagged = True
-      f.within.add(self)
+      if isinstance(f,Function):
+        f.tagged = True
+        f.within.add(self)
 
   def export(self,path:Path) -> None:
     path = path/f"data/{self.namespace}/tags/functions/{self.name}.json"
     values:list[str] = []
     for f in self.functions:
-      if f.callstate is _FuncState.EXPORT:
+      if isinstance(f,Function) and f.callstate is _FuncState.EXPORT:
         """中身のある呼び出し先だけ呼び出す"""
         values.append(f.expression)
 
@@ -767,6 +769,22 @@ class Datapack(metaclass=_DatapackMeta):
       pathstrs.append(str(relpath))
     pydptxt.write_text('\n'.join(pathstrs))
 
+class ExistFunction:
+  def __init__(self,namespace:str,name:str) -> None:
+    """
+    既に存在するmcfunctionを表すクラス
+
+    mcfunctionを新規作成する場合はFunctionクラスを使うこと
+    """
+    self.namespace = namespace
+    self.name = name
+  
+  def call(self):
+    return Command(f'function {self.expression}')
+
+  @property
+  def expression(self) -> str:
+    return f"{self.namespace}:{self.name}"
 
 class _FuncState(Enum):
   NEEDLESS = auto()
@@ -774,14 +792,75 @@ class _FuncState(Enum):
   SINGLE = auto()
   EXPORT = auto()
 
+
 class Function:
   """
-  default_access_modifier: FunctionAccessModifier = FunctionAccessModifier.API
+  新規作成するmcfunctionをあらわすクラス
 
-    名前付きファンクションのデフォルトのアクセス修飾子
+  既存のmcfunctionを使う場合はExistFunctionクラスを使うこと
 
-    Datapack.export_imp_doc == True の場合のみ有効
+  `Function += Command`でコマンドを追加できる。
+
+  マイクラ上では`function {namespace}:{name}`となる。
+
+  `namespace`,`name`を省略するとデフォルトの名前空間のデフォルトのフォルダ内に`"{自動生成id}.mcfunction"`が生成される。
+  ただし、最適化によってmcfunctionファイルが生成されない場合がある。
+
+  デフォルトの名前空間とデフォルトのフォルダはFunction.exportAll()の引数で設定可能。
+
+  params
+  ---
+  namespace: Optional[str] = None
+    ファンクション名前空間
+
+    省略するとデフォルトの名前空間となる (Function.exportAll()の引数で設定可能) 
+
+    例: `"minecraft"` `"mynamespace"`
+
+  name: Optional[str] = None
+    ファンクションのパス 空白や'/'で終わる場合はファンクション名が`".mcfunction"`となる
+
+    省略するとデフォルトのフォルダ内の`{自動生成id}.mcfunction`となる (Function.exportAll()の引数で設定可能) 
+
+    例: `""` `"myfync"` `"dir/myfunc"` `"dir/subdir/"`
+  
+  access_modifier: Optional[FunctionAccessModifier]
+    [IMP-Doc](https://github.com/ChenCMD/datapack-helper-plus-JP/wiki/IMP-Doc)のファンクションアクセス修飾子を指定
+
+    Datapack.export_imp_doc == False の場合機能しない
+
+    デフォルト: 匿名ファンクションの場合 WITHIN, 名前付きの場合 API
+  
+  description: Optional[str]
+    functionの説明文 複数行可能
+
+    [IMP-Doc](https://github.com/ChenCMD/datapack-helper-plus-JP/wiki/IMP-Doc)に記載する
+
+    Datapack.export_imp_doc == False の場合機能しない
+  
+  delete_on_regenerate:
+    データパック再生成時にファンクションを削除するかどうか
+    基本的にTrue
+
+  commands: list[Command] = []
+    コマンドのリスト
+
+    += で後からコマンドを追加できるので基本的には与えなくてよい
+
+  example
+  ---
+
+  ```python
+  func1 = Function('minecraft','test/func')
+  func1 += MC.Say('hello')
+
+  func2 = Function()
+
+  func1 += func2.call()
+  ```
+
   """
+
   functions:list[Function] = []
 
   @classmethod
@@ -793,79 +872,20 @@ class Function:
   default_access_modifier:FunctionAccessModifier = FunctionAccessModifier.API
 
   @overload
-  def __init__(self,namespace:str,name:str,access_modifier:FunctionAccessModifier|None=None,description:str|None=None,*_,commands:None|list[Command]=None) -> None:pass
+  def __init__(self,namespace:str,name:str,access_modifier:FunctionAccessModifier|None=None,description:str|None=None,delete_on_regenerate:bool=True,*_,commands:None|list[Command]=None) -> None:pass
   @overload
   def __init__(self,namespace:str,name:str,*_,commands:None|list[Command]=None) -> None:pass
   @overload
   def __init__(self,*_,commands:None|list[Command]=None) -> None:pass
-  def __init__(self,namespace:str|None=None,name:str|None=None,access_modifier:FunctionAccessModifier|None=None,description:str|None=None,*_,commands:None|list[Command]=None) -> None:
-    """
-    mcfunctionをあらわすクラス
-
-    `Function += Command`でコマンドを追加できる。
-
-    マイクラ上では`function {namespace}:{name}`となる。
-
-    `namespace`,`name`を省略するとデフォルトの名前空間のデフォルトのフォルダ内に`"{自動生成id}.mcfunction"`が生成される。
-    ただし、最適化によってmcfunctionファイルが生成されない場合がある。
-
-    デフォルトの名前空間とデフォルトのフォルダはFunction.exportAll()の引数で設定可能。
-
-    params
-    ---
-    namespace: Optional[str] = None
-      ファンクション名前空間
-
-      省略するとデフォルトの名前空間となる (Function.exportAll()の引数で設定可能) 
-
-      例: `"minecraft"` `"mynamespace"`
-
-    name: Optional[str] = None
-      ファンクションのパス 空白や'/'で終わる場合はファンクション名が`".mcfunction"`となる
-
-      省略するとデフォルトのフォルダ内の`{自動生成id}.mcfunction`となる (Function.exportAll()の引数で設定可能) 
-
-      例: `""` `"myfync"` `"dir/myfunc"` `"dir/subdir/"`
-    
-    access_modifier: Optional[FunctionAccessModifier]
-      [IMP-Doc](https://github.com/ChenCMD/datapack-helper-plus-JP/wiki/IMP-Doc)のファンクションアクセス修飾子を指定
-
-      Datapack.export_imp_doc == False の場合機能しない
-
-      デフォルト: 匿名ファンクションの場合 WITHIN, 名前付きの場合 API
-    
-    description: Optional[str]
-      functionの説明文 複数行可能
-
-      [IMP-Doc](https://github.com/ChenCMD/datapack-helper-plus-JP/wiki/IMP-Doc)に記載する
-
-      Datapack.export_imp_doc == False の場合機能しない
-
-    commands: list[Command] = []
-      コマンドのリスト
-
-      += で後からコマンドを追加できるので基本的には与えなくてよい
-
-    example
-    ---
-
-    ```python
-    func1 = Function('minecraft','test/func')
-    func1 += MC.Say('hello')
-
-    func2 = Function()
-
-    func1 += func2.call()
-    ```
-
-    """
-
+  def __init__(self,namespace:str|None=None,name:str|None=None,access_modifier:FunctionAccessModifier|None=None,description:str|None=None,delete_on_regenerate:bool=True,*_,commands:None|list[Command]=None) -> None:
     if namespace is not None and not re.fullmatch('[0-9a-z_-]+',namespace):
       raise ValueError(f'namespace argument must match "a" "a0" "a_b-" not "{namespace}"')
 
     if name is not None and not re.fullmatch(r'([0-9a-z_\.-]+/)*([0-9a-z_\.-]+)?',name):
       raise ValueError(f'name argument must like "" "a" "a1/b.1" "a_/b-/" not "{name}"')
 
+    self.delete_on_regenerate = delete_on_regenerate
+    
     self.functions.append(self)
     self.commands:list[Command] = [*commands] if commands else []
     self._namespace = namespace
@@ -891,7 +911,7 @@ class Function:
       else:
         access_modifier = FunctionAccessModifier.WITHIN
     self.access_modifier = access_modifier
-  
+
   def set_name(self,namespace:str,name:str):
     if self._hasname:
       raise ValueError('cannot reset function name')
@@ -1040,6 +1060,11 @@ class Function:
     while not _path.exists():
       paths.append(_path)
       _path = _path.parent
+
+    if paths and not self.delete_on_regenerate:
+      # もともとあったことにする
+      paths.pop(0)
+
     Datapack.created_paths.extend(reversed(paths))
 
     path.parent.mkdir(parents=True,exist_ok=True)

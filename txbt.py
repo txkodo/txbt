@@ -3,11 +3,46 @@ from abc import ABCMeta, abstractmethod
 from copy import copy
 from enum import Enum, auto
 from random import randint
-from typing import Callable
 from typing_extensions import Self
-from datapack import Byte, Compound, FunctionTag, Scoreboard, Selector, Int, Command, Function, Objective, StorageNbt, Value
+from datapack import Byte, Compound, ConditionSubCommand, FunctionTag, OhMyDat, Scoreboard, Selector, Command, Function, Objective, StorageNbt, Value
 from id import gen_id
 from library.on_install import OnInstall
+
+
+# class TxBtDat(IDatapackLibrary):
+#   using = False
+
+#   @classmethod
+#   def install(cls, datapack_path: Path, datapack_id: str) -> None:
+#     FunctionTag.load.append(ExistFunction('txbt_dat','sys/load'))
+#     if not (datapack_path/'data/txbt_dat').exists():
+#       print("installing txbt_dat")
+#       cp = subprocess.run(['git', 'clone', 'https://github.com/txkodo/txbt_dat.git'],cwd=datapack_path/'data', encoding='utf-8', stderr=subprocess.PIPE)
+#       if cp.returncode != 0:
+#         raise ImportError(cp.stderr)
+#       cls.rmtree(datapack_path/'data/txbt_dat/.git')
+
+#   @classmethod
+#   def uninstall(cls,datapack_path:Path) -> None:
+#     if (datapack_path/'data/txbt_dat').exists():
+#       print("uninstalling txbt_dat")
+#       cls.rmtree(datapack_path/'data/txbt_dat')
+
+#   @classmethod
+#   def Please(cls):
+#     cls.using = True
+#     return Command('function #txbt_dat:please')
+
+#   _storage = StorageNbt('txbt_dat:')
+#   _data = _storage['_',List[List[List[List[List[List[List[List[Compound]]]]]]]]][-4][-4][-4][-4][-4][-4][-4][-4]
+#   _scoreboard = Scoreboard(Objective('TxBtDatID'),Selector.Player('_'))
+
+#   @property
+#   @classmethod
+#   def data(cls):
+#     """エンティティごとのデータが格納されているstorage (Compound)"""
+#     cls.using = True
+#     return cls._data
 
 def splitMcpath(mcpath:str,isdir:bool=False):
   """
@@ -61,9 +96,8 @@ class ScoreboardIterator:
 
 ScoreboardIterator.unique = ScoreboardIterator()
 
-_scopes_path = 'scopes'
-_flags_path = 'flags'
 _data_path = 'data'
+_flags_path = 'flags'
 _result_path = 'result'
 _temp_flag_path = 'tmp'
 _ticking_tag = 'txbt.tick'
@@ -84,10 +118,9 @@ class IEvent(metaclass=ABCMeta):
 
   mode:_ExportMode
   _storage = StorageNbt("txbt:")
-  scopes = _storage[_scopes_path]
+  scopes = _storage[_data_path]
   _result = _storage[_result_path,Byte]
   _temp_flag = _storage[_temp_flag_path,Byte]
-  _data:Compound
   _flags:Compound
   _abort:Function
   id:str
@@ -95,9 +128,8 @@ class IEvent(metaclass=ABCMeta):
   intidata = Function('txbt', 'init_unsafe', description='''txbtで生成されたストレージの内容を空にする。
 データパックを再生成した際に実行することで、不要なデータを一掃できる。
 イベントの実行中に起動すると壊れるので実行するときは気を付けること。''')
-  intidata += _storage[_data_path].remove()
   intidata += _storage[_flags_path].remove()
-  intidata += _storage[_scopes_path].remove()
+  intidata += _storage[_data_path].remove()
 
   _id_upper  = tuple(map(chr,range(ord('A'),ord('Z')+1)))
   _id_lower  = tuple(map(chr,range(ord('a'),ord('z')+1)))
@@ -237,7 +269,6 @@ class IEvent(metaclass=ABCMeta):
 
     eventid = IEvent.nextId()
 
-    IEvent._data = IEvent._storage[_data_path][eventid]
     IEvent._flags = IEvent._storage[_flags_path][eventid]
 
     enter_namespace,enter_name = splitMcpath(enter_path,True)
@@ -264,7 +295,6 @@ class IEvent(metaclass=ABCMeta):
     main += self.notActive + _main.call()
     init += self.notActive + _init.call()
 
-    exit += IEvent._data.remove()
     exit += IEvent._flags.remove()
 
   def export_entity(self,enter_path:str,objectiveIterator:ScoreboardIterator):
@@ -429,9 +459,20 @@ class WaitWhile(IEvent):
   """コマンドが成功しなくなるまで待機して失敗を返す"""
   _funcmap:dict[str,Function] = {}
 
-  def __init__(self,condition:Command) -> None:
+  def __init__(self,condition:Command|ConditionSubCommand,pre_commands:list[Command]=[],post_commands:list[Command]=[]) -> None:
+    """
+    コマンドが成功しなくなるまで待機して失敗を返す
+
+    condition : 成功かどうかを確かめるコマンドor条件サブコマンド
+
+    pre_commands : condition実行前に実行するコマンド(任意)
+
+    post_commands : condition実行後に実行するコマンド(任意)
+    """
     super().__init__()
     self.condition = condition
+    self.pre = pre_commands
+    self.post = post_commands
 
   def main_server(self, func: Function, abort: Function, tick: Function, init: Function, resultless: bool) -> Function:
     enter = Function()
@@ -440,7 +481,9 @@ class WaitWhile(IEvent):
     abort += enter.clear_schedule()
     func += enter.call()
 
+    enter.append(*self.pre)
     enter += IEvent._temp_flag.storeSuccess(1) + self.condition
+    enter.append(*self.post)
     enter += IEvent._temp_flag.isMatch(Byte(0)) + exit.call()
     enter += self.isActive + enter.schedule(1)
 
@@ -472,9 +515,20 @@ class WaitUntil(IEvent):
   """コマンドが成功するまで待機して成功を返す"""
   _funcmap:dict[str,Function] = {}
 
-  def __init__(self,condition:Command) -> None:
+  def __init__(self,condition:Command|ConditionSubCommand,pre_commands:list[Command]=[],post_commands:list[Command]=[]) -> None:
+    """
+    コマンドが成功するまで待機して成功を返す
+
+    `condition` : 成功かどうかを確かめるコマンドor条件サブコマンド
+
+    `pre_commands` : condition実行前に実行するコマンド(任意)
+
+    `post_commands` : condition実行後に実行するコマンド(任意)
+    """
     super().__init__()
     self.condition = condition
+    self.pre = pre_commands
+    self.post = post_commands
 
   def main_server(self, func: Function, abort: Function, tick: Function, init: Function, resultless: bool) -> Function:
     enter = Function()
@@ -483,7 +537,9 @@ class WaitUntil(IEvent):
     abort += enter.clear_schedule()
     func += enter.call()
 
+    enter.append(*self.pre)
     enter += IEvent._temp_flag.storeSuccess(1) + self.condition
+    enter.append(*self.post)
     enter += IEvent._temp_flag.isMatch(Byte(1)) + exit.call()
     enter += self.isActive + enter.schedule(1)
 
@@ -651,35 +707,35 @@ class InitAbort(IWrapper):
       self.sub._abort += self.abort.call()
     return exit
 
-class Scope(IWrapper):
-  """
-  イベント専用の変数空間を提供する
+# class Scope(IWrapper):
+#   """
+#   イベント専用の変数空間を提供する
 
-  コンストラクタに(Compound -> IEvent)となる関数を渡すか、関数デコレータとして使用する
-  """
-  def __init__(self, gen: Callable[[Compound],IEvent]) -> None:
-    self.gen = gen
-    super(IEvent).__init__()
+#   コンストラクタに(Compound -> IEvent)となる関数を渡すか、関数デコレータとして使用する
+#   """
+#   def __init__(self, gen: Callable[[Compound],IEvent]) -> None:
+#     self.gen = gen
+#     super(IEvent).__init__()
 
-  def _export(self, func: Function, abort: Function, tick: Function, init: Function, resultless:bool) -> Function:
-    match IEvent.mode:
-      case _ExportMode.ENTITY:
-        return self._export_entity(func, abort, tick, init, resultless)
-      case _ExportMode.SERVER:
-        return self._export_server(func, abort, tick, init, resultless)
+#   def _export(self, func: Function, abort: Function, tick: Function, init: Function, resultless:bool) -> Function:
+#     match IEvent.mode:
+#       case _ExportMode.ENTITY:
+#         return self._export_entity(func, abort, tick, init, resultless)
+#       case _ExportMode.SERVER:
+#         return self._export_server(func, abort, tick, init, resultless)
 
-  def _export_server(self, func: Function, abort: Function, tick: Function, init: Function, resultless:bool) -> Function:
-    scope = IEvent.scopes[IEvent.nextId()]
-    self.sub = self.gen(scope)
-    func += scope.remove()
-    return super()._export(func, abort, tick, init, resultless)
+#   def _export_server(self, func: Function, abort: Function, tick: Function, init: Function, resultless:bool) -> Function:
+#     scope = IEvent.scopes[IEvent.nextId()]
+#     self.sub = self.gen(scope)
+#     func += scope.remove()
+#     return super()._export(func, abort, tick, init, resultless)
 
-  def _export_entity(self, func: Function, abort: Function, tick: Function, init: Function, resultless:bool) -> Function:
-    raise NotImplementedError
+#   def _export_entity(self, func: Function, abort: Function, tick: Function, init: Function, resultless:bool) -> Function:
+#     raise NotImplementedError
 
-  @property
-  def isInfinite(self) -> bool:
-    return False
+#   @property
+#   def isInfinite(self) -> bool:
+#     return False
 
 class IComposit(IEvent,metaclass=ABCMeta):
   def __init__(self,*subs:IEvent) -> None:
@@ -809,33 +865,7 @@ class ParallelTraverse(IComposit):
   すべての子要素を並行して実行し、必ず成功を返す
   `&`演算子と等価
   """
-
-  def main_server(self, func: Function, abort: Function, tick: Function, init: Function, resultless: bool) -> Function:
-    exit = Function()
-
-    if self.isInfinite:
-      for sub in self.subs:
-        end = sub._export(func, abort, tick, init, True)
-      return exit
-
-    data = IEvent._data[self.id]
-    abort += data.remove()
-    count = data["count",Int]
-
-    func += count.set(Int(len(self.subs)))
-
-    for sub in self.subs:
-      end = sub._export(func, abort, tick, init, True)
-      end += count.storeResult(0.99999) + count.getValue()
-      end += count.isMatch(Int(0)) + exit.call()
-
-    if not resultless:
-      exit += self.succeed
-
-    exit += data.remove()
-    return exit
-
-  def main_entity(self, func: Function, abort: Function, tick: Function, init: Function, resultless: bool) -> Function:
+  def main(self, func: Function, abort: Function, tick: Function, init: Function, resultless: bool) -> Function:
     exit = Function()
     
     if self.isInfinite:
@@ -971,3 +1001,23 @@ class ParallelAll(IComposit):
 
   @property
   def isInfinite(self) -> bool: return all(sub.isInfinite for sub in self.subs)
+
+def getGlobalScope():
+  """
+  サーバーイベント用の変数空間を提供する
+
+  エンティティイベントで使うと変数がすべてのエンティティで共有される
+  """
+  return IEvent.scopes[IEvent.nextId()]
+
+def getEntityScope():
+  """
+  エンティティイベント用の変数空間を提供する
+
+  各エンティティの各イベントごとの変数空間となっているので衝突しない
+
+  サーバーイベントで使うと壊れるので使わないこと
+
+  変数にアクセスす直前に OhMyDat.Please() を必ず実行すること
+  """
+  return OhMyDat.data['kdbt'][IEvent.nextId()]
