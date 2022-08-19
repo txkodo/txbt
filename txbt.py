@@ -4,7 +4,7 @@ from copy import copy
 from enum import Enum, auto
 from random import randint
 from typing_extensions import Self
-from datapack import Byte, Compound, ConditionSubCommand, FunctionTag, OhMyDat, Scoreboard, Selector, Command, Function, Objective, StorageNbt, Value
+from datapack import Byte, Command, Compound, ConditionSubCommand, FunctionTag, ICommand, OhMyDat, Scoreboard, Selector, Function, Objective, StorageNbt, Value
 from id import gen_id
 from library.on_install import OnInstall
 from mcpath import McPath
@@ -383,8 +383,8 @@ class IEvent(metaclass=ABCMeta):
     return Failure(self)
 
 class Run(IEvent):
-  def __init__(self,*commands:Command|str) -> None:
-    self.commands = [command if isinstance(command,Command) else Command(command) for command in commands]
+  def __init__(self,*commands:ICommand) -> None:
+    self.commands = commands
     super().__init__()
 
   def _export(self, func: Function, abort: Function, tick: Function, init: Function, resultless: bool) -> Function:
@@ -461,7 +461,7 @@ class WaitWhile(IEvent):
   """コマンドが成功しなくなるまで待機して失敗を返す"""
   _funcmap:dict[str,Function] = {}
 
-  def __init__(self,condition:Command|ConditionSubCommand,pre_commands:list[Command]=[],post_commands:list[Command]=[]) -> None:
+  def __init__(self,condition:ICommand|ConditionSubCommand,pre_commands:list[ICommand]=[],post_commands:list[ICommand]=[]) -> None:
     """
     コマンドが成功しなくなるまで待機して失敗を返す
 
@@ -517,7 +517,7 @@ class WaitUntil(IEvent):
   """コマンドが成功するまで待機して成功を返す"""
   _funcmap:dict[str,Function] = {}
 
-  def __init__(self,condition:Command|ConditionSubCommand,pre_commands:list[Command]=[],post_commands:list[Command]=[]) -> None:
+  def __init__(self,condition:ICommand|ConditionSubCommand,pre_commands:list[ICommand]=[],post_commands:list[ICommand]=[]) -> None:
     """
     コマンドが成功するまで待機して成功を返す
 

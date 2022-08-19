@@ -9,6 +9,7 @@ class McPath:
   default_namespace = 'minecraft'
   _namespace:str
   _parts:list[str]
+  _istag:bool
 
   def __new__(cls: type[Self],mcpath:str|McPath|None=None) -> Self:
     match mcpath:
@@ -21,12 +22,17 @@ class McPath:
         return self
       case str():
         self = super().__new__(cls)
-        match = re.fullmatch(r'(?:([0-9a-z_\.-]*)\:)?((?:[0-9a-z_\.-]+/)*[0-9a-z_\.-]*)',mcpath)
+        match = re.fullmatch(r'(#?)(?:([0-9a-z_\.-]*)\:)?((?:[0-9a-z_\.-]+/)*[0-9a-z_\.-]*)',mcpath)
         if not match:
           raise McPathError(f'"{mcpath}" is not valid ResourceLocation')
-        self._namespace = match.groups()[0] or 'minecraft'
-        self._parts = match.groups()[1].split('/')
+        self._istag = match.groups()[0] == '#'
+        self._namespace = match.groups()[1] or 'minecraft'
+        self._parts = match.groups()[2].split('/')
         return self
+  
+  @property
+  def istag(self):
+    return self._istag
 
   def __str__(self) -> str:
     return self.str
@@ -34,17 +40,13 @@ class McPath:
   @property
   def str(self) -> str:
     if self._namespace == self.default_namespace:
+      if self.istag:
+        return '#' + '/'.join(self.parts)
       if self.parts:
         return '/'.join(self.parts)
       else:
         return ':'
-    return self._namespace + ':' + '/'.join(self.parts)
-
-  @property
-  def tag_str(self) -> str:
-    if self._namespace == self.default_namespace:
-      return '#' + '/'.join(self.parts)
-    return '#' + self._namespace + ':' + '/'.join(self.parts)
+    return ('#' if self.istag else '') + self._namespace + ':' + '/'.join(self.parts)
 
   def __truediv__(self,path:str):
     if self._parts and self._parts[-1] == '':
@@ -55,6 +57,7 @@ class McPath:
     result = McPath()
     result._namespace = self._namespace
     result._parts = self._parts + path.split('/')
+    result._istag = self._istag
     return result
 
   @property
@@ -79,8 +82,10 @@ class McPath:
     return '/'.join(self._parts)
 
   def function(self,root:Path):
+    assert not self.istag
     return root/'data'/self._namespace/'functions'/('/'.join(self._parts)+'.mcfunction')
 
   def function_tag(self,root:Path):
+    assert self.istag
     return root/'data'/self._namespace/'tags/functions'/('/'.join(self._parts)+'.json')
 

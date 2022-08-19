@@ -3,7 +3,7 @@
 summonコマンド呼び出し直後(コマンドによって生成されたエンティティ)と、毎チックのはじめ(自然スポーンしたエンティティ)に対し実行する
 """
 
-from datapack import Command, Selector, Function, FunctionTag, INbt, List, Position, Str, Value
+from datapack import ICommand, Selector, Function, FunctionTag, INbt, List, Position, Str, Value
 
 _summoned_tag = '__summon__'
 _on_summon_tag = '__on_summon__'
@@ -17,8 +17,8 @@ summon = FunctionTag('minecraft:summon')
 _general = Function()
 summon.append(_general)
 
-_general += Command.Tag.Add(Selector.S(), _summoned_tag)
-_general += Command.Tag.Remove(Selector.S(), _on_summon_tag)
+_general += ICommand.Tag.Add(Selector.S(), _summoned_tag)
+_general += ICommand.Tag.Remove(Selector.S(), _on_summon_tag)
 
 def Summon(type: str, pos: Position.IPosition, **nbt: Value[INbt]):
   """
@@ -32,11 +32,11 @@ def Summon(type: str, pos: Position.IPosition, **nbt: Value[INbt]):
   else:
     nbt['Tags'] = List[Str]([Str(_on_summon_tag)])
 
-  f += Command.Summon(type, pos, **nbt)
+  f += ICommand.Summon(type, pos, **nbt)
   f += Selector.E(tag=_on_summon_tag, limit=1).As().At(Selector.S()) + summon.call()
   return f.call()
 
-Command.Summon = Summon
+ICommand.Summon = Summon
 
 _tick = Function()
 FunctionTag.tick.append(_tick)

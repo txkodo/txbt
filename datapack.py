@@ -1,34 +1,19 @@
 from __future__ import annotations
 from abc import ABCMeta, abstractmethod
-from decimal import Decimal
+from copy import copy
 from typing import Any, Callable, Generic, Literal, Protocol, TypeAlias, TypeGuard, TypeVar, final, get_args, overload, Union, runtime_checkable
 from typing_extensions import Self
 from enum import Enum, auto
 import os
 import json
 from pathlib import Path
-from random import randint
 import re
 import shutil
 import subprocess
 
 from mcpath import McPath
+from util import float_to_str, gen_id
 
-def _float_to_str(f:float):
-  return format(Decimal.from_float(f),'f')
-
-_id_upper  = tuple(map(chr,range(ord('A'),ord('Z')+1)))
-_id_lower  = tuple(map(chr,range(ord('a'),ord('z')+1)))
-_id_number = tuple(map(chr,range(ord('0'),ord('9')+1)))
-
-def _gen_id(length:int=8,prefix:str='',suffix:str='',upper:bool=True,lower:bool=True,number:bool=True):
-  """{length=8}桁のIDを生成する [0-9a-zA-Z]"""
-  chars:list[str] = []
-  if upper :chars.extend(_id_upper)
-  if lower :chars.extend(_id_lower)
-  if number:chars.extend(_id_number)
-  maxidx = len(chars) - 1
-  return prefix + ''.join(chars[randint(0,maxidx)] for _ in range(length)) + suffix
 
 class Position:
   class IPosition(metaclass=ABCMeta):
@@ -58,16 +43,16 @@ class Position:
       return f'{expr(self.x)} {expr(self.y)} {expr(self.z)}'
 
     def Positioned(self):
-      return SubCommand(f"positioned {self.expression()}")
+      return Execute.Positioned(self)
 
     def IfBlock(self,block:Block):
-      return ConditionSubCommand(f"if block {self.expression()} {block.expression()}")
+      return Execute.IfBlock(self,block)
 
     def UnlessBlock(self,block:Block):
-      return ConditionSubCommand(f"unless block {self.expression()} {block.expression()}")
+      return Execute.UnlessBlock(self,block)
     
     def Facing(self):
-      return SubCommand(f"facing {self.expression()}")
+      return Execute.Facing(self)
 
     def Nbt(self):
       return BlockNbt(self)
@@ -105,12 +90,323 @@ class Position:
     """~x ~y ~z"""
     prefix = "~"
 
+class ISubCommandSegment(metaclass=ABCMeta):
+  def export_subcommand(self) -> str:
+    raise NotImplementedError
 
+class IStoreSubCommandSegment(ISubCommandSegment):
+  def __init__(self,is_result:bool) -> None:
+    super().__init__()
+    self.is_result = is_result
+
+  @property
+  def prefix(self) -> str:
+    return 'store result ' if self.is_result else 'store success '
+
+class IConditionSubCommandSegment(ISubCommandSegment):
+  def __init__(self,condition:bool) -> None:
+    super().__init__()
+    self.condition = condition
+  
+  def invert(self):
+    result = copy(self)
+    result.condition = not self.condition
+    return result
+  
+  def __inv__(self):
+    return self.invert()
+  
+  @property
+  def prefix(self) -> str:
+    return 'if ' if self.condition else 'unless '
+
+class SubCommandSegment:
+  class As(ISubCommandSegment):
+    def __init__(self,entity:ISelector) -> None:
+      super().__init__()
+      self.entity = entity
+
+    def export_subcommand(self) -> str:
+      return "as " + self.entity.expression()
+
+  class At(ISubCommandSegment):
+    def __init__(self,entity:ISelector) -> None:
+      super().__init__()
+      self.entity = entity
+    
+    def export_subcommand(self) -> str:
+      return "at " + self.entity.expression()
+
+  class Positioned(ISubCommandSegment):
+    def __init__(self,pos:Position.IPosition) -> None:
+      super().__init__()
+      self.pos = pos
+    
+    def export_subcommand(self) -> str:
+      return f"positioned {self.pos.expression()}"
+    
+    class As(ISubCommandSegment):
+      def __init__(self,entity:ISelector) -> None:
+        super().__init__()
+        self.entity = entity
+
+      def export_subcommand(self) -> str:
+        return "positioned as " + self.entity.expression()
+
+  class Align(ISubCommandSegment):
+    def __init__(self,axes:Literal['x','y','z','xy','yz','xz','xyz']) -> None:
+      super().__init__()
+      self.axes = axes
+    
+    def export_subcommand(self) -> str:
+      return "align " + self.axes
+
+  class Facing(ISubCommandSegment):
+    def __init__(self,pos:Position.IPosition) -> None:
+      super().__init__()
+      self.pos = pos
+    
+    def export_subcommand(self) -> str:
+      return f"facing {self.pos.expression()}"
+    
+    class Entity(ISubCommandSegment):
+      def __init__(self,entity:ISelector) -> None:
+        super().__init__()
+        self.entity = entity
+
+      def export_subcommand(self) -> str:
+        return "facing entity " + self.entity.expression()
+
+  class Rotated(ISubCommandSegment):
+    def __init__(self,yaw:float,pitch:float) -> None:
+      super().__init__()
+      self.yaw = yaw
+      self.pitch = pitch
+    
+    def export_subcommand(self) -> str:
+      return f'rotated {float_to_str(self.yaw)} {float_to_str(self.pitch)}'
+
+    class As(ISubCommandSegment):
+      def __init__(self,entity:ISelector) -> None:
+        super().__init__()
+        self.entity = entity
+
+      def export_subcommand(self) -> str:
+        return "rotated as  " + self.entity.expression()
+
+  class In(ISubCommandSegment):
+    def __init__(self,dimension:McPath|str) -> None:
+      super().__init__()
+      self.dimension = McPath(dimension)
+      assert not self.dimension.istag
+
+    def export_subcommand(self) -> str:
+      return f'in ' + self.dimension.str
+
+  class Anchored(ISubCommandSegment):
+    def __init__(self,anchor:Literal['feet','eyes']) -> None:
+      super().__init__()
+      self.anchor = anchor
+
+    def export_subcommand(self) -> str:
+      return f'anchored ' + self.anchor
+
+  class Condition:
+    class Nbt(IConditionSubCommandSegment):
+      @classmethod
+      def If(cls,nbt:INbt):
+        return cls(nbt,True)
+
+      @classmethod
+      def Unless(cls,nbt:INbt):
+        return cls(nbt,False)
+
+      def __init__(self,nbt:INbt,condition:bool) -> None:
+        super().__init__(condition)
+        self.nbt = nbt
+
+      def export_subcommand(self) -> str:
+        return super().prefix + 'data ' + str(self.nbt.path)
+
+      class Matches(IConditionSubCommandSegment):
+        @classmethod
+        def If(cls,nbt:NBT,value:Value[NBT]):
+          return cls(nbt,value,True)
+
+        @classmethod
+        def Unless(cls,nbt:NBT,value:Value[NBT]):
+          return cls(nbt,value,False)
+
+        def __init__(self,nbt:NBT,value:Value[NBT],condition:bool) -> None:
+          super().__init__(condition)
+          self.nbt = nbt
+          self.value = value
+
+        def export_subcommand(self) -> str:
+          return super().prefix + 'data ' + str(self.nbt.path.match(self.value))
+
+
+    class Entity(IConditionSubCommandSegment):
+      @classmethod
+      def If(cls,entity:ISelector):
+        return cls(entity,True)
+
+      @classmethod
+      def Unless(cls,entity:ISelector):
+        return cls(entity,True)
+
+      def __init__(self,entity:ISelector,condition:bool) -> None:
+        super().__init__(condition)
+        self.entity = entity
+      
+      def export_subcommand(self) -> str:
+        return super().prefix + "entity " + self.entity.expression()
+
+    class Block(IConditionSubCommandSegment):
+      @classmethod
+      def If(cls,pos:Position.IPosition,block:Block):
+        return cls(pos,block,True)
+
+      @classmethod
+      def Unless(cls,pos:Position.IPosition,block:Block):
+        return cls(pos,block,True)
+
+      def __init__(self,pos:Position.IPosition,block:Block,condition:bool) -> None:
+        super().__init__(condition)
+        self.pos = pos
+        self.block = block
+      
+      def export_subcommand(self) -> str:
+        return super().prefix + f'block {self.pos.expression()} {self.block.expression()}'
+
+    class Blocks(IConditionSubCommandSegment):
+      @classmethod
+      def If(cls,begin:Position.IPosition,end:Position.IPosition,destination:Position.IPosition,method:Literal['all','masked']):
+        return cls(begin,end,destination,method,True)
+
+      @classmethod
+      def Unless(cls,begin:Position.IPosition,end:Position.IPosition,destination:Position.IPosition,method:Literal['all','masked']):
+        return cls(begin,end,destination,method,True)
+
+      def __init__(self,begin:Position.IPosition,end:Position.IPosition,destination:Position.IPosition,method:Literal['all','masked'],condition:bool) -> None:
+        super().__init__(condition)
+        self.begin = begin
+        self.end = end
+        self.destination = destination
+        self.method = method
+      
+      def export_subcommand(self) -> str:
+        return super().prefix + f'blocks {self.begin.expression()} {self.end.expression()} {self.destination.expression()} {self.method}'
+
+    class Score(IConditionSubCommandSegment):
+      @classmethod
+      def If(cls,target:Scoreboard,source:Scoreboard,operator:Literal['<','<=','=','>=','>']):
+        return cls(target,source,operator,True)
+
+      @classmethod
+      def Unless(cls,target:Scoreboard,source:Scoreboard,operator:Literal['<','<=','=','>=','>']):
+        return cls(target,source,operator,True)
+
+      def __init__(self,target:Scoreboard,source:Scoreboard,operator:Literal['<','<=','=','>=','>'],condition:bool) -> None:
+        super().__init__(condition)
+        self.target = target
+        self.source = source
+        self.operator = operator
+      
+      def export_subcommand(self) -> str:
+        return super().prefix + f'score {self.target.expression()} {self.operator} {self.source.expression()}'
+
+      class Matches(IConditionSubCommandSegment):
+        @classmethod
+        def If(cls,target:Scoreboard,start:int,stop:int|None=None):
+          return cls(target,start,stop,True)
+
+        @classmethod
+        def Unless(cls,target:Scoreboard,start:int,stop:int|None=None):
+          return cls(target,start,stop,True)
+
+        def __init__(self,target:Scoreboard,start:int,stop:int|None,condition:bool) -> None:
+          super().__init__(condition)
+          self.target = target
+          self.start = start
+          self.stop = stop
+
+        def export_subcommand(self) -> str:
+          if self.stop is None:
+            return super().prefix + f'score {self.target.expression()} matches {self.start}'
+          else:
+            return super().prefix + f'score {self.target.expression()} matches {self.start}..{self.stop}'
+  
+  class Store:
+    class Nbt(IStoreSubCommandSegment):
+      @classmethod
+      def Result(cls,nbt:INum[Any],scale:float=1):
+        return cls(nbt,scale,True)
+
+      @classmethod
+      def Success(cls,nbt:INum[Any],scale:float=1):
+        return cls(nbt,scale,False)
+
+      def __init__(self,nbt:INum[Any],scale:float,is_result:bool) -> None:
+        super().__init__(is_result)
+        self.nbt = nbt
+        self.scale = scale
+
+      def export_subcommand(self) -> str:
+        return super().prefix + f'{self.nbt.path} {self.nbt.mode} {float_to_str(self.scale)}'
+
+    class Score(IStoreSubCommandSegment):
+      @classmethod
+      def Result(cls,scoreboard:Scoreboard):
+        return cls(scoreboard,True)
+
+      @classmethod
+      def Success(cls,scoreboard:Scoreboard):
+        return cls(scoreboard,False)
+
+      def __init__(self,scoreboard:Scoreboard,is_result:bool) -> None:
+        super().__init__(is_result)
+        self.scoreboard = scoreboard
+
+      def export_subcommand(self) -> str:
+        return super().prefix + f'score {self.scoreboard.expression()}'
+
+    class Bossbar(IStoreSubCommandSegment):
+      @classmethod
+      def Result(cls,id:str,case:Literal['value','max']):
+        return cls(id,case,True)
+
+      @classmethod
+      def Success(cls,id:str,case:Literal['value','max']):
+        return cls(id,case,False)
+
+      def __init__(self,id:str,case:Literal['value','max'],is_result:bool) -> None:
+        super().__init__(is_result)
+        self.id = id
+        self.case = case
+
+      def export_subcommand(self) -> str:
+        return super().prefix + f'bossbar {self.id} {self.case}'
+
+class ICommand(metaclass=ABCMeta):
+  """ any minecraft command """
+  def __init__(self) -> None:
+    self.subcommands:list[ISubCommandSegment] = []
+
+  def export_command(self) -> str:
+    raise NotImplementedError
+
+  def export(self) -> str:
+    result = self.export_command()
+    if self.subcommands:
+      return "execute " + " ".join(sub.export_subcommand() for sub in self.subcommands) + " run " + result
+    else:
+      return result
 
 class SubCommand:
   """ at / positioned / in / as / rotated / store ..."""
-  def __init__(self,content:str|None=None) -> None:
-    self.subcommands:list[str] = []
+  def __init__(self,content:ISubCommandSegment|None=None) -> None:
+    self.subcommands:list[ISubCommandSegment] = []
     if content is not None:
       self.subcommands.append( content )
 
@@ -121,9 +417,9 @@ class SubCommand:
   def __add__(self,other:SubCommand) -> SubCommand:pass
 
   @overload
-  def __add__(self,other:Command) -> Command:pass
+  def __add__(self,other:ICommand) -> ICommand:pass
   
-  def __add__(self,other:SubCommand|Command):
+  def __add__(self,other:SubCommand|ICommand):
     if isinstance(other,ConditionSubCommand):
       result = ConditionSubCommand()
       result.subcommands.extend(self.subcommands)
@@ -134,13 +430,13 @@ class SubCommand:
       result.subcommands.extend(self.subcommands)
       result.subcommands.extend(other.subcommands)
       return result
-    elif isinstance(other,_FunctionCommand):
-      result = _FunctionCommand(other.holder)
+    elif isinstance(other,Command.Function.Function):
+      result = Command.Function.Function(other.holder)
       result.subcommands.extend(self.subcommands)
       result.subcommands.extend(other.subcommands)
       return result
     else:
-      result = Command(other.content)
+      result = copy(other)
       result.subcommands.extend(self.subcommands)
       result.subcommands.extend(other.subcommands)
       return result
@@ -257,208 +553,617 @@ class SubCommand:
     """ execute store success bossbar {id} value|max {score} """
     return self + Execute.StoreSuccessBossbar(id,case)
 
-  def Run(self,command:Command|str):
+  def Run(self,command:ICommand):
     """ execute run {command} """
     return self + Execute.Run(command)
 
+class ConditionSubCommand(SubCommand,ICommand):
+  """ if / unless """
+  def export(self) -> str:
+    assert self.subcommands
+    assert isinstance(self.subcommands[-1],IConditionSubCommandSegment)
+    return "execute " + " ".join(sub.export_subcommand() for sub in self.subcommands)
+  
+  def invert(self):
+    if len(self.subcommands) != 1:
+      return ValueError('cannot invert multiple subcommands')
+    result = copy(self)
+    head = self.subcommands[-1]
+    assert isinstance(head,IConditionSubCommandSegment)
+    result.subcommands = [head.invert()]
+    return result
+
+  def __inv__(self):
+    return self.invert()
 
 class Command:
-  """ any minecraft command """
-  def __init__(self,content:str) -> None:
-    self.subcommands:list[str] = []
-    self.content = content
+  class Reload(ICommand):
+    def export_command(self) -> str:
+      return 'reload'
 
-  def export(self) -> str:
-    result = self._command
-    if self.subcommands:
-      return "execute " + " ".join(self.subcommands) + " run " + result
-    else:
-      return result
+  class Function(ICommand):
+    def __new__(cls,function:McPath|str|Function|FunctionTag) -> ICommand:
+      match function:
+        case Function():
+          return Command.Function.Function(function)
+        case FunctionTag():
+          return Command.Function.FunctionTag(function)
+        case _:
+          return Command.Function.FunctionExist(function)
 
-  @property
-  def _command(self) -> str:
-    return self.content
+    def __init__(self,*_:Any,**__:Any) -> None: raise NotImplementedError
 
-  @staticmethod
-  def Reload():
-    return Command(f'reload')
+    class FunctionExist(ICommand):
+      def __init__(self,function:McPath|str) -> None:
+        super().__init__()
+        self.path = function
 
-  @staticmethod
-  def Function(path:McPath|str,istag:bool=False):
-    if istag:
-      return Command(f'function {McPath(path).tag_str}')
-    else:
-      return Command(f'function {McPath(path).str}')
-
-  @staticmethod
-  def Say(content:str):
-    return Command(f'say {content}')
-
-  @staticmethod
-  def Tellraw(entity:ISelector,*value:jsontext):
-    v = "" if len(value) == 0 else evaljsontext(value[0] if len(value) == 1 else list(value))
-    return Command(f'tellraw {entity.expression()} {json.dumps(v)}')
-
-  @staticmethod
-  def Summon(type:str,pos:Position.IPosition,**nbt:Value[INbt]):
-    if nbt:
-      return Command(f'summon {type} {pos.expression()} {Compound(nbt).str()}')
-    return Command(f'summon {type} {pos.expression()}')
-
-  @staticmethod
-  def Kill(selector:ISelector):
-    return Command(f'kill {selector.expression()}')
+      def export_command(self) -> str:
+        return f'function {McPath(self.path).str}'
   
+    class Function(ICommand):
+      def __init__(self,function:Function) -> None:
+        super().__init__()
+        self.holder = function
+
+      def export_command(self) -> str:
+        raise NotImplementedError
+    
+    class FunctionTag(ICommand):
+      def __init__(self,function:FunctionTag) -> None:
+        super().__init__()
+        self.holder = function
+      
+      def export_command(self) -> str:
+        raise NotImplementedError
+
+
+  class Schedule:
+    class Function(ICommand):
+      def __new__(cls,function:McPath|str|Function|FunctionTag,tick:int,append:bool=False) -> ICommand:
+        match function:
+          case Function():
+            return Command.Schedule.Function.Function(function,tick,append)
+          case FunctionTag():
+            return Command.Schedule.Function.FunctionTag(function,tick,append)
+          case _:
+            return Command.Schedule.Function.FunctionExist(function,tick,append)
+
+      def __init__(self,*_:Any,**__:Any) -> None: raise NotImplementedError
+    
+      class Function(ICommand):
+        def __init__(self,function:Function,tick:int,append:bool=False) -> None:
+          super().__init__()
+          self.holder = function
+          self.tick = tick
+          self.append = append
+        
+        def export_command(self) -> str:
+          return f'schedule function {self.holder.expression}' + (' append' if self.append else '')
+
+      class FunctionTag(ICommand):
+        def __init__(self,function:FunctionTag,tick:int,append:bool=False) -> None:
+          super().__init__()
+          self.holder = function
+          self.tick = tick
+          self.append = append
+        
+        def export_command(self) -> str:
+          return f'schedule function {self.holder.expression}' + (' append' if self.append else '')
+
+      class FunctionExist(ICommand):
+        def __init__(self,function:McPath|str,tick:int,append:bool=False) -> None:
+          super().__init__()
+          self.path = function
+          self.tick = tick
+          self.append = append
+
+        def export_command(self) -> str:
+          return f'schedule function {McPath(self.path).str}' + (' append' if self.append else '')
+
+
+    class Clear(ICommand):
+      def __init__(self,function:McPath|str|Function|FunctionTag) -> None:
+        super().__init__()
+        self.function = function
+
+      def export_command(self) -> str:
+        match self.function:
+          case Function():
+            path = self.function.expression
+          case FunctionTag():
+            path = self.function.expression
+          case _:
+            path = McPath(self.function).str
+        return 'schedule clear ' + path
+
+  class Say(ICommand):
+    def __init__(self,content:str) -> None:
+      super().__init__()
+      self.content = content
+
+    def export_command(self) -> str:
+      return f'say {self.content}'
+  
+  class Tellraw(ICommand):
+    def __init__(self,selector:ISelector,*value:jsontext) -> None:
+      super().__init__()
+      self.selector = selector
+      self.values = value
+    
+    def export_command(self) -> str:
+      match len(self.values):
+        case 0:
+          v = ''
+        case 1:
+          v = evaljsontext(self.values[0])
+        case _:
+          v = list(self.values)
+      return f'tellraw {self.selector.expression()} {json.dumps(v)}'
+
+  class Summon(ICommand):
+    def __init__(self,type:str,pos:Position.IPosition,**nbt:Value[INbt]):
+      super().__init__()
+      self.type = type
+      self.pos = pos
+      self.nbt = nbt
+    
+    def export_command(self) -> str:
+      if self.nbt:
+        return f'summon {self.type} {self.pos.expression()} {Compound(self.nbt).str()}'
+      return f'summon {self.type} {self.pos.expression()}'
+
+  class Kill(ICommand):
+    def __init__(self,selector:ISelector) -> None:
+      super().__init__()
+      self.selector = selector
+    
+    def export_command(self) -> str:
+      return f'kill {self.selector.expression()}' 
+
   class Tag:
-    @staticmethod
-    def List(entity:ISelector):
-      return Command(f'tag {entity.expression()} list')
+    class List(ICommand):
+      def __init__(self,entity:ISelector) -> None:
+        super().__init__()
+        self.entity = entity
+      
+      def export_command(self) -> str:
+        return f'tag {self.entity.expression()} list'
 
-    @staticmethod
-    def Add(entity:ISelector,tag:str):
-      return Command(f'tag {entity.expression()} add {tag}')
+    class Add(ICommand):
+      def __init__(self,entity:ISelector,tag:str) -> None:
+        super().__init__()
+        self.entity = entity
+        self.tag = tag
 
-    @staticmethod
-    def Remove(entity:ISelector,tag:str):
-      return Command(f'tag {entity.expression()} remove {tag}')
+      def export_command(self) -> str:
+        return f'tag {self.entity.expression()} add {self.tag}'
 
-  @staticmethod
-  def CallFunc(function:str):
-    return Command(f'function {function}')
+    class Remove(ICommand):
+      def __init__(self,entity:ISelector,tag:str) -> None:
+        super().__init__()
+        self.entity = entity
+        self.tag = tag
 
-  @staticmethod
-  def SetBlock(block:Block,pos:Position.IPosition,mode:Literal['destroy','keep','replace']|None=None):
-    if mode:
-      return Command(f'setblock {pos.expression()} {block.expression()} {mode}')
-    return Command(f'setblock {pos.expression()} {block.expression()}')
+      def export_command(self) -> str:
+        return f'tag {self.entity.expression()} add {self.tag}'
+
+  class SetBlock(ICommand):
+    def __init__(self,block:Block,pos:Position.IPosition,mode:Literal['destroy','keep','replace']|None=None) -> None:
+      super().__init__()
+      self.block = block
+      self.pos = pos
+      self.mode = mode
+    
+    def export_command(self) -> str:        
+      if self.mode:
+        return f'setblock {self.pos.expression()} {self.block.expression()} {self.mode}'
+      return f'setblock {self.pos.expression()} {self.block.expression()}'
   
-  @staticmethod
-  def Fill(start:Position.IPosition,end:Position.IPosition,block:Block,mode:Literal['destroy','hollow','keep','outline','replace']|None=None,oldblock:Block|None=None)->Command:
-    if mode == 'replace':
-      if oldblock is None:
-        raise ValueError('fill mode "replace" needs argument "oldblock"')
-      return Command(f'fill {start.expression()} {end.expression()} {block.expression()} replace {oldblock.expression()}')
-    if oldblock is not None:
-      raise ValueError(f'''fill mode "{mode}" doesn't needs argument "oldblock"''')
-    return Command(f'fill {start.expression()} {end.expression()} {block.expression()} {mode}')
+  class Fill(ICommand):
+    def __init__(self,start:Position.IPosition,end:Position.IPosition,block:Block,mode:Literal['destroy','hollow','keep','outline','replace']|None=None,oldblock:Block|None=None) -> None:
+      super().__init__()
+      self.start = start
+      self.end = end
+      self.block = block
+      self.oldblock = oldblock
+      self.mode = mode
+    
+    def export_command(self) -> str:
+      if self.mode == 'replace':
+        if self.oldblock is None:
+          raise ValueError('fill mode "replace" needs argument "oldblock"')
+        return f'fill {self.start.expression()} {self.end.expression()} {self.block.expression()} replace {self.oldblock.expression()}'
+      if self.oldblock is not None:
+        raise ValueError(f'''fill mode "{self.mode}" doesn't needs argument "oldblock"''')
+      return f'fill {self.start.expression()} {self.end.expression()} {self.block.expression()} {self.mode}'
 
   @staticmethod
-  def Clone(
+  class Clone(ICommand):
+    def __init__(
+      self,
       start:Position.IPosition,
       end:Position.IPosition,
       target:Position.IPosition,
       maskmode:Literal['replace','masked','filtered']|None=None,
       clonemode:Literal['normal','force','move']|None=None,
       filterblock:Block|None=None
-    ):
-    clonemode_suffix = '' if clonemode is None else ' '+clonemode
-    if maskmode == 'filtered':
-      if filterblock is None:
-        raise ValueError('clone mode "replace" needs argument "filterblock"')
-      return Command(f'clone {start.expression()} {end.expression()} {target.expression()} filtered {filterblock.expression()}' + clonemode_suffix)
+    ) -> None:
+      super().__init__()
+      self.start = start
+      self.end = end
+      self.target = target
+      self.maskmode = maskmode
+      self.clonemode = clonemode
+      self.filterblock = filterblock
+      
+    def export_command(self) -> str:
+      clonemode_suffix = '' if self.clonemode is None else ' '+self.clonemode
+      if self.maskmode == 'filtered':
+        if self.filterblock is None:
+          raise ValueError('clone mode "replace" needs argument "filterblock"')
+        return f'clone {self.start.expression()} {self.end.expression()} {self.target.expression()} filtered {self.filterblock.expression()}' + clonemode_suffix
 
-    if filterblock is not None:
-      raise ValueError(f'''clone mode "{maskmode}" doesn't needs argument "filterblock"''')
-    if maskmode is None:
-      if clonemode is not None:
-        raise ValueError(f'"clonemode" argument needs to be used with "maskmode" argument')
-      return Command(f'clone {start.expression()} {end.expression()} {target.expression()}')
-    return Command(f'clone {start.expression()} {end.expression()} {target.expression()} {maskmode}'+clonemode_suffix)
+      if self.filterblock is not None:
+        raise ValueError(f'''clone mode "{self.maskmode}" doesn't needs argument "filterblock"''')
+      if self.maskmode is None:
+        if self.clonemode is not None:
+          raise ValueError(f'"clonemode" argument needs to be used with "maskmode" argument')
+        return f'clone {self.start.expression()} {self.end.expression()} {self.target.expression()}'
+      return f'clone {self.start.expression()} {self.end.expression()} {self.target.expression()} {self.maskmode}'+clonemode_suffix
 
-  @staticmethod
-  def Give(item:Item,count:int):
-    return Command(f'give {item.expression()} {count}')
-
-  @staticmethod
-  def Clear(entity:ISelector,item:Item|None=None,maxcount:int|None=None):
-    cmd = f'clear {entity.expression()}'
-    if item:
-      cmd += f' {item.expression()}'
-      if maxcount:
-        cmd += f' {maxcount}'
-    return Command(cmd)
   
-  @overload
-  @staticmethod
-  def Particle(id:str,pos:Position.IPosition,dx:float,dy:float,dz:float,speed:float,count:int)->Command:pass
-  @overload
-  @staticmethod
-  def Particle(id:str,pos:Position.IPosition,dx:float,dy:float,dz:float,speed:float,count:int,mode:Literal['force','normal'])->Command:pass
-  @overload
-  @staticmethod
-  def Particle(id:str,pos:Position.IPosition,dx:float,dy:float,dz:float,speed:float,count:int,mode:Literal['force','normal'],entity:ISelector)->Command:pass
-  @staticmethod
-  def Particle(id:str,pos:Position.IPosition,dx:float,dy:float,dz:float,speed:float,count:int,mode:Literal['force','normal']|None=None,entity:ISelector|None=None):
-    cmd = f'particke {id} {pos.expression()} {dx} {dy} {dz} {speed} {count}'
-    if mode:
-      cmd += ' '+mode
-    if entity:
-      cmd += ' '+entity.expression()
-    return Command(cmd)
+  class Give(ICommand):
+    def __init__(self,item:Item,count:int) -> None:
+      super().__init__()
+      self.item = item
+      self.count = count
+    
+    def export_command(self) -> str:
+      return f'give {self.item.expression()} {self.count}'
+
+  class Clear(ICommand):
+    def __init__(self,entity:ISelector,item:Item|None=None,maxcount:int|None=None) -> None:
+      super().__init__()
+      self.entity = entity
+      self.item = item
+      self.maxcount = maxcount
+    
+    def export(self) -> str:
+      cmd = f'clear {self.entity.expression()}'
+      if self.item:
+        cmd += f' {self.item.expression()}'
+        if self.maxcount:
+          cmd += f' {self.maxcount}'
+      return cmd
+    
+  class Particle(ICommand):
+    def __init__(self,id:str,pos:Position.IPosition,dx:float,dy:float,dz:float,speed:float,count:int,mode:Literal['force','normal']|None=None,entity:ISelector|None=None) -> None:
+      super().__init__()
+      self.id = id
+      self.pos = pos
+      self.dx = dx
+      self.dy = dy
+      self.dz = dz
+      self.speed = speed
+      self.count = count
+      self.mode = mode
+      self.entity = entity
+    
+    def export_command(self) -> str:
+      cmd = f'particke {self.id} {self.pos.expression()} {self.dx} {self.dy} {self.dz} {self.speed} {self.count}'
+      if self.mode:
+        cmd += ' '+self.mode
+      if self.entity:
+        cmd += ' '+self.entity.expression()
+      return cmd 
+    
+    @staticmethod
+    def Color(id:Literal['entity_effect','ambient_entity_effect'],pos:Position.IPosition,colorcode:str,mode:Literal['force','normal']|None=None,entity:ISelector|None=None):
+      """
+      colorcode:
+        "#000000"
+      """
+      Command.Particle(id,pos,int(colorcode[1:3])/100,int(colorcode[3:5])/100,int(colorcode[5:7],16)/100,1,0,mode,entity) 
   
-  @overload
-  @staticmethod
-  def ColorParticle(id:Literal['entity_effect','ambient_entity_effect'],pos:Position.IPosition,colorcode:str)->Command:pass
-  @overload
-  @staticmethod
-  def ColorParticle(id:Literal['entity_effect','ambient_entity_effect'],pos:Position.IPosition,colorcode:str,mode:Literal['force','normal'])->Command:pass
-  @overload
-  @staticmethod
-  def ColorParticle(id:Literal['entity_effect','ambient_entity_effect'],pos:Position.IPosition,colorcode:str,mode:Literal['force','normal'],entity:ISelector)->Command:pass
-  @staticmethod
-  def ColorParticle(id:Literal['entity_effect','ambient_entity_effect'],pos:Position.IPosition,colorcode:str,mode:Literal['force','normal']|None=None,entity:ISelector|None=None):
-    """
-    colorcode:
-      "#000000"
-    """
-    return Command.Particle(id,pos,int(colorcode[1:3])/100,int(colorcode[3:5])/100,int(colorcode[5:7])/100,1,0,mode,entity) #type:ignore
+  class Data:
+    class Get(ICommand):
+      def __init__(self,nbt:INbt,scale:float|None=None) -> None:
+        super().__init__()
+        self.nbt = nbt
+        self.scale = scale
 
+      def export_command(self) -> str:
+        if self.scale:
+          return f'data get {self.nbt.path} {float_to_str(self.scale)}'
+        return f'data get {self.nbt.path}'
 
+    class Remove(ICommand):
+      def __init__(self,nbt:INbt,scale:float|None=None) -> None:
+        super().__init__()
+        self.nbt = nbt
+        self.scale = scale
 
+      def export_command(self) -> str:
+        if self.scale:
+          return f'data remove {self.nbt.path} {float_to_str(self.scale)}'
+        return f'data remove {self.nbt.path}'
+ 
+    class Modify:
+      class Set(ICommand):
+        def __new__(cls: type[Self],target:NBT,source:Value[NBT]|NBT) -> ICommand:
+          if isinstance(source,Value):
+            return Command.Data.Modify.Set.Value(target,source)
+          else:
+            return Command.Data.Modify.Set.From(target,source)
 
-class ConditionSubCommand(SubCommand,Command):
-  """ if / unless """
-  def export(self) -> str:
-    assert self.subcommands
-    return "execute " + " ".join(self.subcommands)
+        def __init__(self,*_:Any,**__:Any) -> None: raise NotImplementedError
 
-class _FunctionCommand(Command):
-  """ function command """
-  def __init__(self,holder:Function) -> None:
-    super().__init__('')
-    self.holder = holder
+        class Value(ICommand):
+          def __init__(self,target:NBT,value:Value[NBT]) -> None:
+            super().__init__()
+            self.target = target
+            self.value = value
 
-  @property
-  def _command(self) -> str:
-    raise NotImplementedError
+          def export_command(self) -> str:
+            return f'data modify {self.target.path} set value {self.value.str()}'
 
-class _FunctionTagCommand(Command):
-  """ function tag command """
-  def __init__(self,holder:FunctionTag) -> None:
-    self.holder = holder
-    super().__init__(f'function {holder.expression}')
+        class From(ICommand):
+          def __init__(self,target:NBT,source:NBT) -> None:
+            super().__init__()
+            self.target = target
+            self.source = source
 
-class _ScheduleCommand(Command):
-  """ function minecraft command """
-  def __init__(self,holder:Function,tick:int,append:bool) -> None:
-    super().__init__('')
-    self.holder = holder
-    self.tick = tick
-    self.append = append
+          def export_command(self) -> str:
+            return f'data modify {self.target.path} set from {self.source.path}'
+      
+      class Merge(ICommand):
+        def __new__(cls: type[Self],target:Compound,source:Value[Compound]|Compound) -> ICommand:
+          if isinstance(source,Value):
+            return Command.Data.Modify.Merge.Value(target,source)
+          else:
+            return Command.Data.Modify.Merge.From(target,source)
 
-  @property
-  def _command(self) -> str:
-    return f'schedule function {self.holder.expression} {self.tick}t {"append" if self.append else "replace"}'
+        def __init__(self,*_:Any,**__:Any) -> None: raise NotImplementedError
 
-class _ScheduleClearCommand(Command):
-  """ function minecraft command """
-  def __init__(self,holder:Function) -> None:
-    super().__init__('')
-    self.holder = holder
+        class Value(ICommand):
+          def __init__(self,target:Compound,value:Value[Compound]) -> None:
+            super().__init__()
+            self.target = target
+            self.value = value
 
-  @property
-  def _command(self) -> str:
-    return f'schedule clear {self.holder.expression}'
+          def export_command(self) -> str:
+            return f'data modify {self.target.path} merge value {self.value.str()}'
+
+        class From(ICommand):
+          def __init__(self,target:Compound,source:Compound) -> None:
+            super().__init__()
+            self.target = target
+            self.source = source
+
+          def export_command(self) -> str:
+            return f'data modify {self.target.path} merge from {self.source.path}'
+
+      class Append(ICommand):
+        def __new__(cls: type[Self],target:IArray[NBT],source:Value[IArray[NBT]]|IArray[NBT]) -> ICommand:
+          if isinstance(source,Value):
+            return Command.Data.Modify.Append.Value(target,source)
+          else:
+            return Command.Data.Modify.Append.From(target,source)
+
+        def __init__(self,*_:Any,**__:Any) -> None: raise NotImplementedError
+
+        class Value(ICommand):
+          def __init__(self,target:IArray[NBT],value:Value[IArray[NBT]]) -> None:
+            super().__init__()
+            self.target = target
+            self.value = value
+
+          def export_command(self) -> str:
+            return f'data modify {self.target.path} append value {self.value.str()}'
+
+        class From(ICommand):
+          def __init__(self,target:IArray[NBT],source:IArray[NBT]) -> None:
+            super().__init__()
+            self.target = target
+            self.source = source
+
+          def export_command(self) -> str:
+            return f'data modify {self.target.path} append from {self.source.path}'
+
+      class Prepend(ICommand):
+        def __new__(cls: type[Self],target:IArray[NBT],source:Value[IArray[NBT]]|IArray[NBT]) -> ICommand:
+          if isinstance(source,Value):
+            return Command.Data.Modify.Prepend.Value(target,source)
+          else:
+            return Command.Data.Modify.Prepend.From(target,source)
+
+        def __init__(self,*_:Any,**__:Any) -> None: raise NotImplementedError
+
+        class Value(ICommand):
+          def __init__(self,target:IArray[NBT],value:Value[IArray[NBT]]) -> None:
+            super().__init__()
+            self.target = target
+            self.value = value
+
+          def export_command(self) -> str:
+            return f'data modify {self.target.path} prepend value {self.value.str()}'
+
+        class From(ICommand):
+          def __init__(self,target:IArray[NBT],source:IArray[NBT]) -> None:
+            super().__init__()
+            self.target = target
+            self.source = source
+
+          def export_command(self) -> str:
+            return f'data modify {self.target.path} prepend from {self.source.path}'
+
+      class Insert(ICommand):
+        def __new__(cls: type[Self],target:IArray[NBT],index:int,source:Value[IArray[NBT]]|IArray[NBT]) -> ICommand:
+          if isinstance(source,Value):
+            return Command.Data.Modify.Insert.Value(target,index,source)
+          else:
+            return Command.Data.Modify.Insert.From(target,index,source)
+
+        def __init__(self,*_:Any,**__:Any) -> None: raise NotImplementedError
+
+        class Value(ICommand):
+          def __init__(self,target:IArray[NBT],index:int,value:Value[IArray[NBT]]) -> None:
+            super().__init__()
+            self.target = target
+            self.value = value
+            self.index = index
+
+          def export_command(self) -> str:
+            return f'data modify {self.target.path} insert {self.index} value {self.value.str()}'
+
+        class From(ICommand):
+          def __init__(self,target:IArray[NBT],index:int,source:IArray[NBT]) -> None:
+            super().__init__()
+            self.target = target
+            self.source = source
+            self.index = index
+
+          def export_command(self) -> str:
+            return f'data modify {self.target.path} insert {self.index} from {self.source.path}'
+
+  class Scoreboard:
+    class Objectives:
+      class Add(ICommand):
+        def __init__(self,objective:Objective,condition:str='dummy',display:str|None=None) -> None:
+          super().__init__()
+          self.objective = objective
+          self.condition = condition
+          self.display = display
+        
+        def export_command(self) -> str:
+          if self.display is None:
+            return f'scoreboard objectives add {self.objective.id} {self.condition}'
+          return f'scoreboard objectives add {self.objective.id} {self.condition} {self.display}'
+
+      class List(ICommand):
+        def __init__(self) -> None:
+          super().__init__()
+        
+        def export_command(self) -> str:
+          return f'scoreboard objectives list'
+
+      class Modify:
+        class Rendertype(ICommand):
+          def __init__(self,objective:Objective,rendertype:Literal['hearts','integer']) -> None:
+            super().__init__()
+            self.objective = objective
+            self.rendertype = rendertype
+          
+          def export_command(self) -> str:
+            return f'scoreboard objectives modify {self.objective.id} rendertype {self.rendertype}'
+
+        class Displayname(ICommand):
+          def __init__(self,objective:Objective,displayname:str) -> None:
+            super().__init__()
+            self.objective = objective
+            self.displayname = displayname
+          
+          def export_command(self) -> str:
+            return f'scoreboard objectives modify {self.objective.id} displayname {self.displayname}'
+
+      class Remove(ICommand):
+        def __init__(self,objective:Objective) -> None:
+          super().__init__()
+          self.objective = objective
+
+        def export_command(self) -> str:
+          return f'scoreboard objectives remove {self.objective.id}'
+
+      class Setdisplay(ICommand):
+        @classmethod
+        def clear(cls,slot:str):
+          return cls(None,slot)
+
+        def __init__(self,objective:Objective|None,slot:str) -> None:
+          super().__init__()
+          self.objective = objective
+          self.slot = slot
+
+        def export_command(self) -> str:
+          if self.objective is None:
+            return f'scoreboard objectives setdisplay {self.slot}'
+          return f'scoreboard objectives setdisplay {self.slot} {self.objective.id}'
+
+    class Players:
+      class Add(ICommand):
+        def __init__(self,score:Scoreboard,value:int) -> None:
+          super().__init__()
+          assert 0 <= value <= 2147483647
+          self.score = score
+          self.value = value
+
+        def export_command(self) -> str:
+          return f'scoreboard players add {self.score.expression()} {self.value}'
+
+      class Remove(ICommand):
+        def __init__(self,score:Scoreboard,value:int) -> None:
+          super().__init__()
+          assert 0 <= value <= 2147483647
+          self.score = score
+          self.value = value
+
+        def export_command(self) -> str:
+          return f'scoreboard players remove {self.score.expression()} {self.value}'
+
+      class Set(ICommand):
+        def __init__(self,score:Scoreboard,value:int) -> None:
+          super().__init__()
+          assert -2147483648 <= value <= 2147483647
+          self.score = score
+          self.value = value
+
+        def export_command(self) -> str:
+          return f'scoreboard players set {self.score.expression()} {self.value}'
+
+      class Get(ICommand):
+        def __init__(self,score:Scoreboard) -> None:
+          super().__init__()
+          self.score = score
+
+        def export_command(self) -> str:
+          return f'scoreboard players get {self.score.expression()}'
+
+      class Reset(ICommand):
+        def __init__(self,score:Scoreboard) -> None:
+          super().__init__()
+          self.score = score
+
+        def export_command(self) -> str:
+          return f'scoreboard players reset {self.score.expression()}'
+
+      class Enable(ICommand):
+        def __init__(self,score:Scoreboard) -> None:
+          super().__init__()
+          self.score = score
+
+        def export_command(self) -> str:
+          return f'scoreboard players enable {self.score.expression()}'
+
+      class List(ICommand):
+        def __init__(self,selector:ISelector|None) -> None:
+          super().__init__()
+          self.selector = selector
+
+        def export_command(self) -> str:
+          if self.selector is None:
+            return f'scoreboard players list *'
+          return f'scoreboard players list {self.selector.expression()}'
+
+      class Operation(ICommand):
+        def __init__(self,target:Scoreboard,operator:Literal['+=','-=','*=','/=','%=','=','<','>','><'],source:Scoreboard) -> None:
+          super().__init__()
+          self.operator = operator
+          self.target = target
+          self.source = source
+
+        def export_command(self) -> str:
+          return f'scoreboard players operation {self.target.expression()} {self.operator} {self.source.expression()}'
 
 class FunctionTag:
   tick:FunctionTag
@@ -467,15 +1172,16 @@ class FunctionTag:
   def __init__(self,path:str|McPath,export_if_empty:bool=True) -> None:
     FunctionTag.functiontags.append(self)
     self.path = McPath(path)
+    assert self.path.istag
     self.export_if_empty = export_if_empty
     self.functions:list[Function|str|McPath] = []
 
   @property
   def expression(self) -> str:
-    return self.path.tag_str
+    return self.path.str
 
-  def call(self) -> Command:
-    return _FunctionTagCommand(self)
+  def call(self) -> ICommand:
+    return Command.Function(self)
 
   @property
   def expression_without_hash(self) -> str:
@@ -512,8 +1218,8 @@ class FunctionTag:
       path.parent.mkdir(parents=True,exist_ok=True)
       path.write_text(json.dumps({"values":values}),encoding='utf8')
 
-FunctionTag.tick = FunctionTag('minecraft:tick',False)
-FunctionTag.load = FunctionTag('minecraft:load',False)
+FunctionTag.tick = FunctionTag('#minecraft:tick',False)
+FunctionTag.load = FunctionTag('#minecraft:load',False)
 
 class IDatapackLibrary:
   """
@@ -811,24 +1517,24 @@ class Function:
   @classmethod
   def nextPath(cls) -> str:
     """無名ファンクションのパスを生成する"""
-    return _gen_id(upper=False,length=24)
+    return gen_id(upper=False,length=24)
 
   callstate:_FuncState
   default_access_modifier:FunctionAccessModifier = FunctionAccessModifier.API
 
   @overload
-  def __init__(self,path:str|McPath,access_modifier:FunctionAccessModifier|None=None,description:str|None=None,delete_on_regenerate:bool=True,*_,commands:None|list[Command]=None) -> None:pass
+  def __init__(self,path:str|McPath,access_modifier:FunctionAccessModifier|None=None,description:str|None=None,delete_on_regenerate:bool=True,*_,commands:None|list[ICommand]=None) -> None:pass
   @overload
-  def __init__(self,path:str|McPath,*_,commands:None|list[Command]=None) -> None:pass
+  def __init__(self,path:str|McPath,*_,commands:None|list[ICommand]=None) -> None:pass
   @overload
-  def __init__(self,*_,commands:None|list[Command]=None) -> None:pass
-  def __init__(self,path:str|McPath|None=None,access_modifier:FunctionAccessModifier|None=None,description:str|None=None,delete_on_regenerate:bool=True,*_,commands:None|list[Command]=None) -> None:
+  def __init__(self,*_,commands:None|list[ICommand]=None) -> None:pass
+  def __init__(self,path:str|McPath|None=None,access_modifier:FunctionAccessModifier|None=None,description:str|None=None,delete_on_regenerate:bool=True,*_,commands:None|list[ICommand]=None) -> None:
 
 
     self.delete_on_regenerate = delete_on_regenerate
     
     self.functions.append(self)
-    self.commands:list[Command] = [*commands] if commands else []
+    self.commands:list[ICommand] = [*commands] if commands else []
     self._path = None if path is None else McPath(path)
     self._children:set[Function] = set()
 
@@ -862,17 +1568,13 @@ class Function:
       self._path = Datapack.default_path/self.nextPath()
     return self._path
 
-  def __iadd__(self,value:str|Command):
-    match value:
-      case str():
-        self.append(Command(value))
-      case Command():
-        self.append(value)
+  def __iadd__(self,value:ICommand):
+    self.append(value)
     return self
 
-  def append(self,*commands:Command):
+  def append(self,*commands:ICommand):
     for command in commands:
-      if isinstance(command,_FunctionCommand):
+      if isinstance(command,Command.Function.Function):
         self._children.add(command.holder)
     self.commands.extend(commands)
 
@@ -880,20 +1582,20 @@ class Function:
   def expression(self) -> str:
     return self.path.str
 
-  def call(self) -> Command:
-    return _FunctionCommand(self)
+  def call(self) -> ICommand:
+    return Command.Function(self)
 
-  def schedule(self,tick:int,append:bool=True) -> Command:
+  def schedule(self,tick:int,append:bool=False) -> ICommand:
     self._scheduled = True
-    return _ScheduleCommand(self,tick,append)
+    return Command.Schedule.Function(self,tick,append)
 
-  def clear_schedule(self) -> Command:
+  def clear_schedule(self) -> ICommand:
     self._scheduled = True
-    return _ScheduleClearCommand(self)
+    return Command.Schedule.Clear(self)
 
   def _isempty(self):
     for cmd in self.commands:
-      if not (isinstance(cmd,_FunctionCommand) and cmd.holder._isempty()):
+      if not (isinstance(cmd,Command.Function.Function) and cmd.holder._isempty()):
         return False
     return True
 
@@ -906,7 +1608,7 @@ class Function:
   def check_call_relation(self):
     """呼び出し先一覧を整理"""
     for cmd in self.commands:
-      if isinstance(cmd,_FunctionCommand):
+      if isinstance(cmd,Command.Function.Function):
         if cmd.subcommands:
           cmd.holder.subcommanded = True
         cmd.holder.used = True
@@ -934,7 +1636,7 @@ class Function:
     parents = parents|{self}
 
     for cmd in self.commands:
-      if isinstance(cmd,_FunctionCommand):
+      if isinstance(cmd,Command.Function.Function):
         func = cmd.holder
         if func in parents:
           func.callstate = _FuncState.EXPORT
@@ -943,21 +1645,21 @@ class Function:
 
     self.visited = True
 
-  def export_commands(self,path:Path,commands:list[str],subcommand:list[str]):
+  def export_commands(self,path:Path,commands:list[str],subcommand:list[ISubCommandSegment]):
     match self.callstate:
       case _FuncState.NEEDLESS:
         pass
       case _FuncState.FLATTEN:
         assert not subcommand
         for cmd in self.commands:
-          if isinstance(cmd,_FunctionCommand):
+          if isinstance(cmd,Command.Function.Function):
             cmd.holder.export_commands(path,commands,cmd.subcommands)
           else:
             commands.append(cmd.export())
       case _FuncState.SINGLE:
         assert len(self.commands) == 1
         cmd = self.commands[0]
-        if isinstance(cmd,_FunctionCommand):
+        if isinstance(cmd,Command.Function.Function):
           cmd.holder.export_commands(path,commands,subcommand + cmd.subcommands)
         else:
           s = cmd.subcommands
@@ -967,12 +1669,12 @@ class Function:
       case _FuncState.EXPORT:
         cmds:list[str] = []
         for cmd in self.commands:
-          if isinstance(cmd,_FunctionCommand):
+          if isinstance(cmd,Command.Function.Function):
             cmd.holder.export_commands(path,cmds,cmd.subcommands)
           else:
             cmds.append(cmd.export())
         self.export_function(path,cmds)
-        c = Command(f"function {self.expression}")
+        c = Command.Function(self.path)
         c.subcommands = [*subcommand]
         commands.append(c.export())
 
@@ -1052,123 +1754,165 @@ class Execute:
 
   @staticmethod
   def As(entity:ISelector):
-    return entity.As()
+    """ execute as @ """
+    return SubCommand(SubCommandSegment.As(entity))
 
   @staticmethod
   def At(entity:ISelector):
-    return entity.At()
+    """ execute at @ """
+    return SubCommand(SubCommandSegment.At(entity))
 
   @staticmethod
   def Positioned(pos:Position.IPosition):
-    return pos.Positioned()
+    """ execute positioned ~ ~ ~ """
+    return SubCommand(SubCommandSegment.Positioned(pos))
 
   @staticmethod
   def PositionedAs(entity:ISelector):
-    return entity.PositionedAs()
+    """ execute positioned as @ """
+    return SubCommand(SubCommandSegment.Positioned.As(entity))
 
   @staticmethod
   def Align(axes:Literal['x','y','z','xy','yz','xz','xyz']):
-    return SubCommand('align '+axes)
-
+    """ execute align xyz """
+    return SubCommand(SubCommandSegment.Align(axes))
+    
   @staticmethod
   def Facing(pos:Position.IPosition):
-    return pos.Facing()
+    """ execute facing ~ ~ ~ """
+    return SubCommand(SubCommandSegment.Facing(pos))
 
   @staticmethod
   def FacingEntity(entity:ISelector):
-    return entity.FacingEntity()
+    """ execute facing entity @ """
+    return SubCommand(SubCommandSegment.Facing.Entity(entity))
 
   @staticmethod
   def Rotated(yaw:float,pitch:float):
-    return SubCommand(f'rotated {_float_to_str(yaw)} {_float_to_str(pitch)}')
+    """ execute rotated ~ ~ """
+    return SubCommand(SubCommandSegment.Rotated(yaw,pitch))
 
   @staticmethod
-  def RotatedAs(entity:ISelector):
-    return entity.RotatedAs()
+  def RotatedAs(target:ISelector):
+    """ execute rotated as @ """
+    return SubCommand(SubCommandSegment.Rotated.As(target))
 
   @staticmethod
   def In(dimension:str):
-    return SubCommand(f'in {dimension}')
+    """ execute in {dimension} """
+    return SubCommand(SubCommandSegment.In(dimension))
 
   @staticmethod
   def Anchored(anchor:Literal['feet','eyes']):
-    return SubCommand(f'anchored {anchor}')
+    """ execute anchored feet|eyes """
+    return SubCommand(SubCommandSegment.Anchored(anchor))
 
   @staticmethod
-  def IfEntity(entity:ISelector):
-    return entity.IfEntity()
+  def IfNbt(nbt:INbt):
+    """ execute if block ~ ~ ~ {block} """
+    return ConditionSubCommand(SubCommandSegment.Condition.Nbt.If(nbt))
 
   @staticmethod
-  def UnlessEntity(entity:ISelector):
-    return entity.UnlessEntity()
+  def UnlessNbt(nbt:INbt):
+    """ execute unless block ~ ~ ~ {block} """
+    return ConditionSubCommand(SubCommandSegment.Condition.Nbt.Unless(nbt))
+
+  @staticmethod
+  def IfNbtMatch(nbt:NBT,value:Value[NBT]):
+    """ execute if block ~ ~ ~ {block} """
+    return ConditionSubCommand(SubCommandSegment.Condition.Nbt.Matches.If(nbt,value))
+
+  @staticmethod
+  def UnlessNbtMatch(nbt:NBT,value:Value[NBT]):
+    """ execute unless block ~ ~ ~ {block} """
+    return ConditionSubCommand(SubCommandSegment.Condition.Nbt.Matches.Unless(nbt,value))
 
   @staticmethod
   def IfBlock(pos:Position.IPosition,block:Block):
-    return ConditionSubCommand(f"if block {pos.expression()} {block.expression()}")
+    """ execute if block ~ ~ ~ {block} """
+    return ConditionSubCommand(SubCommandSegment.Condition.Block.If(pos,block))
 
   @staticmethod
   def UnlessBlock(pos:Position.IPosition,block:Block):
-    return pos.UnlessBlock(block)
+    """ execute unless block ~ ~ ~ {block} """
+    return ConditionSubCommand(SubCommandSegment.Condition.Block.Unless(pos,block))
 
   @staticmethod
   def IfBlocks(begin:Position.IPosition,end:Position.IPosition,destination:Position.IPosition,method:Literal['all','masked']):
-    return ConditionSubCommand(f'if blocks {begin.expression()} {end.expression()} {destination.expression()} {method}')
+    """ execute if blocks ~ ~ ~ ~ ~ ~ ~ ~ ~ {method} """
+    return ConditionSubCommand(SubCommandSegment.Condition.Blocks.If(begin,end,destination,method))
 
   @staticmethod
   def UnlessBlocks(begin:Position.IPosition,end:Position.IPosition,destination:Position.IPosition,method:Literal['all','masked']):
-    return ConditionSubCommand(f'unless blocks {begin.expression()} {end.expression()} {destination.expression()} {method}')
+    """ execute unless blocks ~ ~ ~ ~ ~ ~ ~ ~ ~ {method} """
+    return ConditionSubCommand(SubCommandSegment.Condition.Blocks.Unless(begin,end,destination,method))
+
+  @staticmethod
+  def IfEntity(entity:ISelector):
+    """ execute if entity {entity} """
+    return ConditionSubCommand(SubCommandSegment.Condition.Entity.If(entity))
+
+  @staticmethod
+  def UnlessEntity(entity:ISelector):
+    """ execute unless entity {entity} """
+    return ConditionSubCommand(SubCommandSegment.Condition.Entity.Unless(entity))
 
   @staticmethod
   def IfScore(target:Scoreboard,source:Scoreboard,operator:Literal['<','<=','=','>=','>']):
-    return ConditionSubCommand(f'if score {target.expression()} {operator} {target.expression()}')
+    """ execute if score {entity} {operator} {source} """
+    return ConditionSubCommand(SubCommandSegment.Condition.Score.If(target,source,operator))
 
   @staticmethod
   def IfScoreMatch(target:Scoreboard,start:int,stop:int|None=None):
-    if stop is None:
-      return ConditionSubCommand(f'if score {target.expression()} matches {start}')
-    else:
-      return ConditionSubCommand(f'if score {target.expression()} matches {start}..{stop}')
+    """ execute if score {entity} matches {start}..{stop} """
+    return ConditionSubCommand(SubCommandSegment.Condition.Score.Matches.If(target,start,stop))
 
   @staticmethod
   def UnlessScore(target:Scoreboard,source:Scoreboard,operator:Literal['<','<=','=','>=','>']):
-    return ConditionSubCommand(f'if score {target.expression()} {operator} {source.expression()}')
+    """ execute unless score {entity} {operator} {source} """
+    return ConditionSubCommand(SubCommandSegment.Condition.Score.Unless(target,source,operator)  )
 
   @staticmethod
   def UnlessScoreMatch(target:Scoreboard,start:int,stop:int|None=None):
-    if stop is None:
-      return ConditionSubCommand(f'unless score {target.expression()} match {start}')
-    else:
-      return ConditionSubCommand(f'unless score {target.expression()} match {start}..{stop}')
+    """ execute unless score {entity} matches {start}..{stop} """
+    return ConditionSubCommand(SubCommandSegment.Condition.Score.Matches.Unless(target,start,stop))
 
   @staticmethod
-  def StoreResultNbt(nbt:Byte|Short|Int|Long|Float|Double,scale:float=1):
-    return nbt.storeResult(scale)
+  def StoreResultNbt(nbt:INum[Any],scale:float=1):
+    """ execute store result {nbt} {scale} """
+    return SubCommand(SubCommandSegment.Store.Nbt.Result(nbt,scale))
 
   @staticmethod
-  def StoreSuccessNbt(nbt:Byte|Short|Int|Long|Float|Double,scale:float=1):
-    return nbt.storeSuccess(scale)
+  def StoreSuccessNbt(nbt:INum[Any],scale:float=1):
+    """ execute store success {nbt} {scale} """
+    return SubCommand(SubCommandSegment.Store.Nbt.Success(nbt,scale))
 
   @staticmethod
-  def StoreResultScore(scoreboard:Scoreboard):
-    return SubCommand(f'store result score {scoreboard.expression()}')
-  
+  def StoreResultScore(score:Scoreboard):
+    """ execute store result score {score} """
+    return SubCommand(SubCommandSegment.Store.Score.Result(score))
+
   @staticmethod
-  def StoreSuccessScore(scoreboard:Scoreboard):
-    return SubCommand(f'store success score {scoreboard.expression()}')
-  
+  def StoreSuccessScore(score:Scoreboard):
+    """ execute store success score {score} """
+    return SubCommand(SubCommandSegment.Store.Score.Success(score))
+
   @staticmethod
   def StoreResultBossbar(id:str,case:Literal['value','max']):
-    return SubCommand(f'store result bossbar {id} {case}')
+    """ execute store result bossbar {id} value|max {score} """
+    return SubCommand(SubCommandSegment.Store.Bossbar.Result(id,case))
 
   @staticmethod
   def StoreSuccessBossbar(id:str,case:Literal['value','max']):
-    return SubCommand(f'store success bossbar {id} {case}')
-  
+    """ execute store success bossbar {id} value|max {score} """
+    return SubCommand(SubCommandSegment.Store.Bossbar.Success(id,case))
+
   @staticmethod
-  def Run(command:Command|str):
-    if isinstance(command,str):
-      return Command(command)
+  def Run(command:ICommand):
+    """ execute run {command} """
     return command
+
+
 
 
 
@@ -1217,14 +1961,9 @@ class NbtPath:
     @final
     def str(self)->str:
       return f"{self.typestr} {self.holderstr} {self.pathstr}"
-
-    def get(self,scale:float|None=None):
-      if scale is None:
-        return Command(f'data get {self.str()}')
-      return Command(f'data get {self.str()} {_float_to_str(scale)}')
-
-    def store(self,mode:Literal['result','success'],type:Literal['byte','short','int','long','float','double'],scale:float=1):
-      return SubCommand(f'store {mode} {self.str()} {type} {_float_to_str(scale or 1.0)}')
+    
+    def __str__(self):
+      return self.str()
 
     @property
     def to_jsontext(self) -> jsontextvalue:
@@ -1427,39 +2166,28 @@ class INbt:
 
   @property
   def path(self):
-    return self._path.str()
+    return self._path
 
-  def _get(self,scale:float|None=None) -> Command:
-    if scale is None:
-      return Command(f"data get {self.path}")
-    return Command(f"data get {self.path} {_float_to_str(scale)}")
+  def _get(self,scale:float|None=None) -> ICommand:
+    return Command.Data.Get(self,scale)
 
-  def remove(self) -> Command:
-    return Command(f"data remove {self.path}")
-
-  def _storeResult(self,type: Literal['byte', 'short', 'int', 'long', 'float', 'double'],scale:float) -> SubCommand:
-    return self._path.store('result',type,scale)
-
-  def _storeSuccess(self,type: Literal['byte', 'short', 'int', 'long', 'float', 'double'],scale:float) -> SubCommand:
-    return self._path.store('success',type,scale)
+  def remove(self) -> ICommand:
+    return Command.Data.Remove(self)
 
   def isMatch(self,value:Value[Self]) -> ConditionSubCommand:
-    return ConditionSubCommand(f'if data {self._path.match(value).str()}')
+    return Execute.IfNbtMatch(self,value)
 
   def notMatch(self,value:Value[Self]) -> ConditionSubCommand:
-    return ConditionSubCommand(f'unless data {self._path.match(value).str()}')
+    return Execute.UnlessNbtMatch(self,value)
 
   def isExists(self) -> ConditionSubCommand:
-    return ConditionSubCommand(f'if data {self._path.str()}')
+    return Execute.IfNbt(self)
 
   def notExists(self) -> ConditionSubCommand:
-    return ConditionSubCommand(f'unless data {self._path.str()}')
+    return Execute.UnlessNbt(self)
 
-  def set(self,value:Value[Self]|Self) -> Command:
-    if isinstance(value,Value):
-      return Command(f"data modify {self.path} set value {value.str()}")
-    else:
-      return Command(f"data modify {self.path} set from {value.path}")
+  def set(self,value:Value[Self]|Self) -> ICommand:
+    return Command.Data.Modify.Set(self,value)
 
   def jsontext(self) -> jsontextvalue:
     return self._path.to_jsontext
@@ -1504,56 +2232,56 @@ class INbtGeneric(INbt,Generic[T]):
 INBTG = TypeVar('INBTG',bound=INbtGeneric[Any])
 
 class INum(INbtGeneric[NUMBER]):
-  _mode:Literal['byte', 'short', 'int', 'long', 'float', 'double']
+  mode:Literal['byte', 'short', 'int', 'long', 'float', 'double']
   _prefixmap = {'byte':'b','short':'s','int':'','long':'l','float':'f','double':'d'}
   _min:int|float
   _max:int|float
 
-  def storeResult(self,scale:float) -> SubCommand: return super()._storeResult(self._mode,scale)
-  def storeSuccess(self,scale:float) -> SubCommand: return super()._storeSuccess(self._mode,scale)
-  def getValue(self,scale:float|None=None) -> Command:return super()._get(scale)
+  def storeResult(self,scale:float) -> SubCommand: return Execute.StoreResultNbt(self,scale)
+  def storeSuccess(self,scale:float) -> SubCommand: return Execute.StoreSuccessNbt(self,scale)
+  def getValue(self,scale:float|None=None) -> ICommand:return super()._get(scale)
 
   @classmethod
   def _str(cls:type[INBTG],value:NUMBER) -> Value[INBTG]:
     assert issubclass(cls,INum)
     if value < cls._min or cls._max < value:
-      raise ValueError(f'{cls._mode} must be in range {cls._min}..{cls._max}')
+      raise ValueError(f'{cls.mode} must be in range {cls._min}..{cls._max}')
     return Value(cls._cls,value,cls._srtingifier)
 
   @classmethod
   def _srtingifier(cls,value:Any):
     if isinstance(value,float):
-      return f'{_float_to_str(value)}{cls._prefixmap[cls._mode]}'
+      return f'{float_to_str(value)}{cls._prefixmap[cls.mode]}'
     assert isinstance(value,int)
-    return f'{value}{cls._prefixmap[cls._mode]}'
+    return f'{value}{cls._prefixmap[cls.mode]}'
 
 class Byte(INum[int]):
-  _mode = 'byte'
+  mode = 'byte'
   _min = -2**7
   _max = 2**7-1
 
 class Short(INum[int]):
-  _mode = 'short'
+  mode = 'short'
   _min = -2**15
   _max = 2**15-1
 
 class Int(INum[int]):
-  _mode = 'int'
+  mode = 'int'
   _min = -2**31
   _max = 2**31-1
 
 class Long(INum[int]):
-  _mode = 'long'
+  mode = 'long'
   _min = -2**63
   _max = 2**63-1
 
 class Float(INum[float]):
-  _mode = 'float'
+  mode = 'float'
   _min = -3.402823e+38
   _max = 3.402823e+38
 
 class Double(INum[float]):
-  _mode = 'double'
+  mode = 'double'
   _min = -1.797693e+308
   _max = 1.797693e+308
 
@@ -1568,7 +2296,7 @@ class Str(INbtGeneric[str]):
     value = value.replace('\\', '\\\\').replace('"', '\\"')
     return f'"{value}"'
 
-  def getLength(self,scale:float|None=None) -> Command:return super()._get(scale)
+  def getLength(self,scale:float|None=None) -> ICommand:return super()._get(scale)
 
 
 class IArray(INbt,Generic[NBT]):
@@ -1581,7 +2309,7 @@ class IArray(INbt,Generic[NBT]):
   def all(self) -> NBT:
     return self._arg(NbtPath.All(self._path),self._arg)
 
-  def getLength(self,scale:float|None=None) -> Command:return super()._get(scale)
+  def getLength(self,scale:float|None=None) -> ICommand:return super()._get(scale)
   _cls_name:str
 
   @staticmethod
@@ -1677,13 +2405,13 @@ class Compound(INbt):
       case (name,r):
         return r(NbtPath.Child(self._path,name),r)
       case _:
-        return value(NbtPath.Child(self._path,_gen_id(prefix=':')),value)
+        return value(NbtPath.Child(self._path,gen_id(prefix=':')),value)
 
   def childMatch(self,child:str,match:Value[Compound]):
     """条件付き子要素 self.child{foo:bar}"""
     return Compound(NbtPath.ChildMatch(self._path,child,match),Compound)
 
-  def getLength(self,scale:float|None=None) -> Command:return super()._get(scale)
+  def getLength(self,scale:float|None=None) -> ICommand:return super()._get(scale)
 
   @staticmethod
   def mergeValue(v1:Value[Compound],v2:Value[Compound]):
@@ -1870,14 +2598,14 @@ class ISelector:
     self["nbt"] = formatCompound(nbt)
 
     if origin is not None:
-      self["x"][_float_to_str(origin.x)] = True
-      self["y"][_float_to_str(origin.y)] = True
-      self["z"][_float_to_str(origin.z)] = True
+      self["x"][float_to_str(origin.x)] = True
+      self["y"][float_to_str(origin.y)] = True
+      self["z"][float_to_str(origin.z)] = True
 
     if dxdydz is not None:
-      self["dx"][_float_to_str(dxdydz[0])] = True
-      self["dy"][_float_to_str(dxdydz[1])] = True
-      self["dz"][_float_to_str(dxdydz[2])] = True
+      self["dx"][float_to_str(dxdydz[0])] = True
+      self["dy"][float_to_str(dxdydz[1])] = True
+      self["dz"][float_to_str(dxdydz[2])] = True
 
     if distance is not None:self["distance"][distance] = True
 
@@ -1904,25 +2632,25 @@ class ISelector:
     self.kwarg[index] = value
   
   def IfEntity(self):
-    return ConditionSubCommand("if entity " + self.expression())
+    return Execute.IfEntity(self)
 
   def UnlessEntity(self):
-    return ConditionSubCommand("unless entity " + self.expression())
+    return Execute.UnlessEntity(self)
   
   def As(self):
-    return SubCommand("as " + self.expression())
+    return Execute.As(self)
   
   def At(self):
-    return SubCommand("at " + self.expression())
+    return Execute.At(self)
 
   def PositionedAs(self):
-    return SubCommand("positioned as " + self.expression())
+    return Execute.PositionedAs(self)
 
   def FacingEntity(self):
-    return SubCommand("facing entity " + self.expression())
+    return Execute.FacingEntity(self)
 
   def RotatedAs(self):
-    return SubCommand("rotated as " + self.expression())
+    return Execute.RotatedAs(self)
 
   def expression(self):
     def bool2str(x:bool):
@@ -2040,7 +2768,7 @@ class Objective:
   """  
   @staticmethod
   def List():
-    return Command('scoreboard objectives list')
+    return Command.Scoreboard.Objectives.List()
 
   def __init__(self,id:str) -> None:
     self.id = id
@@ -2052,17 +2780,14 @@ class Objective:
     display:
       表示名
     """
-    if display is None:
-      return Command(f'scoreboard objectives add {self.id} {condition}')
-    else:
-      return Command(f'scoreboard objectives add {self.id} {condition} {display}')
+    return Command.Scoreboard.Objectives.Add(self,condition,display)
   
   def Remove(self):
     """
     スコアボードを削除する
     """
-    return Command(f'scoreboard objectives remove {self.id}')
-  
+    return Command.Scoreboard.Objectives.Remove(self)
+
   def Setdisplay(self,slot:str):
     """
     スコアボードを表示する
@@ -2070,16 +2795,25 @@ class Objective:
     slot:
       "sidebar" 等
     """
-    return Command(f'scoreboard objectives setdisplay {slot} {self.id}')
-  
-  def ModifyDisplay(self,display:str):
+    return Command.Scoreboard.Objectives.Setdisplay(self,slot)
+
+  def ModifyDisplayname(self,display:str):
     """
     スコアボードの表示名を変更する
 
     display:
       表示名
     """
-    return Command(f'scoreboard objectives modify {self.id} {display}')
+    return Command.Scoreboard.Objectives.Modify.Displayname(self,display)
+
+  def ModifyRendertype(self,rendertype: Literal['hearts', 'integer']):
+    """
+    スコアボードの表示名を変更する
+
+    display:
+      表示名
+    """
+    return Command.Scoreboard.Objectives.Modify.Rendertype(self,rendertype)
 
   def score(self,entity:ISelector|None):
     """
@@ -2096,9 +2830,7 @@ class Scoreboard:
     entity:
       None -> すべてのエンティティを対象にする
     """
-    if entity is None:
-      return Command('scoreboard players list *')
-    return Command(f'scoreboard players list {entity.expression()}')
+    return Command.Scoreboard.Players.List(entity)
   
   def expression(self):
     if self.entity is None:
@@ -2112,32 +2844,30 @@ class Scoreboard:
 
   def Get(self):
     assert self.entity
-    return Command(f'scoreboard players get {self.expression()}')
+    return Command.Scoreboard.Players.Get(self)
 
   def Set(self,value:int):
-    return Command(f'scoreboard players set {self.expression()} {value}')
+    return Command.Scoreboard.Players.Set(self,value)
 
-  def Add(self,value:int) -> Command:
+  def Add(self,value:int) -> ICommand:
     if value <= -1:
-      return self.Remove(-value)
-    assert 0 <= value <= 2147483647
-    return Command(f'scoreboard players add {self.expression()} {value}')
+      return Command.Scoreboard.Players.Remove(self,-value)
+    return Command.Scoreboard.Players.Add(self,value)
 
-  def Remove(self,value:int) -> Command:
+  def Remove(self,value:int) -> ICommand:
     if value <= -1:
-      return self.Add(-value)
-    assert 0 <= value <= 2147483647
-    return Command(f'scoreboard players remove {self.expression()} {value}')
+      return Command.Scoreboard.Players.Add(self,-value)
+    return Command.Scoreboard.Players.Remove(self,value)
   
   def Reset(self):
-    return Command(f'scoreboard players reset {self.expression()}')
+    return Command.Scoreboard.Players.Reset(self)
   
   def Enable(self):
-    return Command(f'scoreboard players enable {self.expression()}')
+    return Command.Scoreboard.Players.Enable(self)
   
-  def Oparation(self,other:Scoreboard,operator:Literal['+=','-=','*=','/=','%=','=','<','>','><']):
-    return Command(f'scoreboard players operation {self.expression()} {operator} {other.expression()}')
-  
+  def Oparation(self,operator:Literal['+=','-=','*=','/=','%=','=','<','>','><'],other:Scoreboard):
+    return Command.Scoreboard.Players.Operation(self,operator,other)
+
   def StoreResult(self):
     return Execute.StoreResultScore(self)
   
@@ -2160,17 +2890,17 @@ class Scoreboard:
     assert self.entity is not None
     return {'score':{'name':self.entity.expression(),'objective':self.objective.id}}
 
-class Item: 
+class ItemTag:
+  pass
+
+class Item:
   @staticmethod
   def customModel(id:str,modeldata:int):
     return Item(id,{'CustomModelData':Int(modeldata)})
 
-  def __init__(self,id:str,nbt:dict[str,Value[INbt]]|None=None) -> None:
+  def __init__(self,id:str|McPath,nbt:dict[str,Value[INbt]]|None=None) -> None:
     """
-    アイテム/アイテムタグ
-
-    id:
-      "minecraft:stone" / "#logs"  / ...
+    アイテム
 
     blockstates:
       {"axis":"x"} / ...
@@ -2178,17 +2908,14 @@ class Item:
     nbt:
       {"Items":List[Compound]\\([])} / ...
     """
-    self.id = id
-    self.isTag = self.id.startswith('#')
+    self.id = McPath(id)
     self.nbt = nbt
 
   def Give(self,count:int):
-    if self.isTag:
-      raise ValueError(f'cannot set blocktag: {self.expression()}')
     return Command.Give(self,count)
 
   def expression(self):
-    result = self.id
+    result = self.id.str
     if self.nbt is not None:
       result += Compound(self.nbt).str()
     return result
@@ -2197,7 +2924,7 @@ class Item:
     """
     {"id":"minecraft:stone","Count":1b,"tag":{}}
     """
-    value:dict[str, Value[INbt]] = {'id':Str(self.id)}
+    value:dict[str, Value[INbt]] = {'id':Str(self.id.str)}
     if count:
       value['Count'] = Byte(count)
     if self.nbt is not None:
@@ -2209,7 +2936,7 @@ class Item:
     return Item(self.id,nbt)
 
 class Block:
-  def __init__(self,id:str,blockstates:dict[str,str]={},nbt:dict[str,Value[INbt]]|None=None) -> None:
+  def __init__(self,id:str|McPath,blockstates:dict[str,str]={},nbt:dict[str,Value[INbt]]|None=None) -> None:
     """
     ブロック/ブロックタグ
 
@@ -2222,13 +2949,12 @@ class Block:
     nbt:
       {"Items":List[Compound]\\([])} / ...
     """
-    self.id = id
-    self.isTag = self.id.startswith('#')
+    self.id = McPath(id)
     self.blockstates = blockstates
     self.nbt = nbt
 
   def SetBlock(self,pos:Position.IPosition):
-    if self.isTag:
+    if self.id.istag:
       raise ValueError(f'cannot set blocktag: {self.expression()}')
     return Command.SetBlock(self,pos)
 
@@ -2236,7 +2962,7 @@ class Block:
     return Execute.IfBlock(pos,self)
 
   def expression(self):
-    result = self.id
+    result = self.id.str
     if self.blockstates:
       result += f'[{",".join( f"{k}={v}" for k,v in self.blockstates.items())}]'
     if self.nbt is not None:
@@ -2285,8 +3011,8 @@ class JsonText:
         strikethrough:bool|None=None,
         obfuscated:bool|None=None,
         insertion:str|None=None,
-        click_run_command:Command|None=None,
-        click_suggest_command:Command|str|None=None,
+        click_run_command:ICommand|None=None,
+        click_suggest_command:ICommand|str|None=None,
         click_copy_to_clipboard:str|None=None,
         click_open_url:str|None=None,
         click_change_page:int|None=None,
@@ -2350,7 +3076,7 @@ class JsonText:
         value["clickEvent"] = {"action":"run_command","value":self.click_run_command.export()}
       elif self.click_suggest_command:
         cmd = self.click_suggest_command
-        if isinstance(cmd,Command):
+        if isinstance(cmd,ICommand):
           cmd = cmd.export()
         value["clickEvent"] = {"action":"suggest_command","value":cmd}
       elif self.click_copy_to_clipboard:
@@ -2432,7 +3158,7 @@ class OhMyDat(IDatapackLibrary):
   @classmethod
   def Please(cls):
     cls.using = True
-    return Command('function #oh_my_dat:please')
+    return Command.Function('#oh_my_dat:please')
 
   _storage = StorageNbt('oh_my_dat:')
   _data = _storage['_',List[List[List[List[List[List[List[List[Compound]]]]]]]]][-4][-4][-4][-4][-4][-4][-4][-4]
@@ -2450,17 +3176,17 @@ class OhMyDat(IDatapackLibrary):
     """scoreboardのidにアクセス"""
     cls.using = True
     f = Function()
-    f += cls._scoreboard.Oparation(score,'=')
-    f += Command('function #oh_its_dat:please')
+    f += cls._scoreboard.Oparation('=',score)
+    f += Command.Function('#oh_its_dat:please')
     return f.call()
 
   @classmethod
-  def PleaseResult(cls,cmd:Command):
+  def PleaseResult(cls,cmd:ICommand):
     """コマンドの実行結果のidにアクセス"""
     cls.using = True
     f = Function()
     f += cls._scoreboard.StoreResult() + cmd
-    f += Command('function #oh_its_dat:please')
+    f += Command.Function('#oh_its_dat:please')
     return f.call()
 
   @classmethod
@@ -2471,4 +3197,4 @@ class OhMyDat(IDatapackLibrary):
     他のデータパックのデータを消してしまう恐れがあるため使わない
     """
     cls.using = True
-    return Command('function #oh_my_dat:release')
+    return Command.Function('#oh_my_dat:release')

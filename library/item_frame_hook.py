@@ -25,10 +25,10 @@ class ItemFrameHook(IDatapackLibrary):
     if o:name.append('out')
     if r:name.append('rot')
     if name:
-      return Command.CallFunc('ifh:api/'+'_'.join(name))
+      return Command.Function('ifh:api/'+'_'.join(name))
     else:
-      return Command.CallFunc('ifh:api/none')
+      return Command.Function('ifh:api/none')
 
-  OnOut = FunctionTag('ifh:on_out')
-  OnIn  = FunctionTag('ifh:on_in')
-  OnRot  = FunctionTag('ifh:on_rot')
+  OnOut = FunctionTag('#ifh:on_out')
+  OnIn  = FunctionTag('#ifh:on_in')
+  OnRot  = FunctionTag('#ifh:on_rot')
