@@ -3,7 +3,8 @@
 summonコマンド呼び出し直後(コマンドによって生成されたエンティティ)と、毎チックのはじめ(自然スポーンしたエンティティ)に対し実行する
 """
 
-from datapack import ICommand, Selector, Function, FunctionTag, INbt, List, Position, Str, Value
+from typing import Any
+from datapack import Command, ICommand, Selector, Function, FunctionTag, INbt, List, Position, Str, Value
 
 _summoned_tag = '__summon__'
 _on_summon_tag = '__on_summon__'
@@ -17,26 +18,32 @@ summon = FunctionTag('minecraft:summon')
 _general = Function()
 summon.append(_general)
 
-_general += ICommand.Tag.Add(Selector.S(), _summoned_tag)
-_general += ICommand.Tag.Remove(Selector.S(), _on_summon_tag)
+_general += Command.Tag.Add(Selector.S(), _summoned_tag)
+_general += Command.Tag.Remove(Selector.S(), _on_summon_tag)
 
-def Summon(type: str, pos: Position.IPosition, **nbt: Value[INbt]):
+SummonOld = Command.Summon
+
+class Summon(ICommand):
   """
   summonコマンドを上書きする
   """
-  f = Function()
-  if 'Tags' in nbt:
-    tags = nbt['Tags']
-    value: list[Value[Str]] = tags.value
-    value.append(Str(_on_summon_tag))
-  else:
-    nbt['Tags'] = List[Str]([Str(_on_summon_tag)])
+  def __new__(cls,type: str, pos: Position.IPosition, **nbt: Value[INbt]) -> ICommand:
+    f = Function()
+    if 'Tags' in nbt:
+      tags = nbt['Tags']
+      value: list[Value[Str]] = tags.value
+      value.append(Str(_on_summon_tag))
+    else:
+      nbt['Tags'] = List[Str]([Str(_on_summon_tag)])
 
-  f += ICommand.Summon(type, pos, **nbt)
-  f += Selector.E(tag=_on_summon_tag, limit=1).As().At(Selector.S()) + summon.call()
-  return f.call()
+    f += SummonOld(type, pos, **nbt)
+    f += Selector.E(tag=_on_summon_tag, limit=1).As().At(Selector.S()) + summon.call()
+    return f.call()
+  
+  def __init__(self,*_:Any,**__:Any) -> None:
+    super().__init__()
 
-ICommand.Summon = Summon
+Command.Summon = Summon #type:ignore
 
 _tick = Function()
 FunctionTag.tick.append(_tick)

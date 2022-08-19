@@ -707,7 +707,7 @@ class Command:
       self.type = type
       self.pos = pos
       self.nbt = nbt
-    
+
     def export_command(self) -> str:
       if self.nbt:
         return f'summon {self.type} {self.pos.expression()} {Compound(self.nbt).str()}'
