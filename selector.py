@@ -1,23 +1,23 @@
 from __future__ import annotations
+from abc import ABCMeta
 import re
 from typing import Literal, TypeVar
 from datapack import Compound, IPredicate, ISelector, Objective, Position, Value
 from mcpath import McPath
 from util import float_to_str
 
-
-class Selector(ISelector):
+class Selector(ISelector,metaclass=ABCMeta):
   _max_limit = 2147483647
+  _mode:Literal['self','entity','player']
 
   def __init__(
       self,
-      mode:Literal['self','entity','player'],
       type:McPath|dict[McPath,bool]={},
       name:str|dict[str,bool]={},
       tag:bool|str|list[str]|dict[str,bool]={},
       team:bool|str|dict[str,bool]={},
       scores:dict[Objective,int|tuple[int,int]]={},
-      advancements:dict[str|McPath,bool|dict[str,bool]]={},
+      advancements:dict[McPath,bool|dict[str,bool]]={},
       predicate:IPredicate|list[IPredicate]|dict[IPredicate,bool]={},
       gamemode:Literal["survival","creative","adventure","spectator"]|dict[Literal["survival","creative","adventure","spectator"],bool]={},
       nbt:Value[Compound]|dict[Value[Compound],bool]={},
@@ -89,7 +89,6 @@ class Selector(ISelector):
         エンティティの選択順
         'nearest'(近い順) / 'furthest'(遠い順),'random'(ランダム),'arbitrary'(スポーンした順※一番軽い)
     """
-    self.mode:Literal['self','entity','player'] = mode
 
     self._init_type(type)
     self._init_name(name)
@@ -112,7 +111,7 @@ class Selector(ISelector):
     self._sort:Literal['nearest','furthest','random','arbitrary'] = sort
 
   def _init_type(self,type:McPath|dict[McPath,bool]):
-    if self.mode == 'player' and type != {}:
+    if self._mode == 'player' and type != {}:
       raise ValueError('@a/@p/@r selector must not have "type" argument')
     self._type:dict[McPath,bool] = {type:True} if isinstance(type,McPath) else {**type}
 
@@ -142,7 +141,7 @@ class Selector(ISelector):
   def _init_scores(self,scores:dict[Objective,int|tuple[int,int]]):
     self._scores = {**scores}
 
-  def _init_advancements(self,advancements:dict[str|McPath,bool|dict[str,bool]]):
+  def _init_advancements(self,advancements:dict[McPath,bool|dict[str,bool]]):
     self._advancements = { McPath(k): v if isinstance(v,bool) else { kk:vv for kk,vv in v.items()} for k,v in advancements.items()}
 
   def _init_predicate(self,predicate:IPredicate|list[IPredicate]|dict[IPredicate,bool]):
@@ -248,7 +247,7 @@ class Selector(ISelector):
     self._limit
     self._sort
 
-    match self.mode:
+    match self._mode:
       case 'self':
         selector = '@s'
       case 'entity':
@@ -290,13 +289,13 @@ class Selector(ISelector):
     else:
       return selector
 
-  def __and__(self:Selector,other:Selector):
+  def __and__(self:_Selector,other:_Selector):
     return self.merge(other)
 
-  def merge(self:Selector,other:Selector):
+  def merge(self:_Selector,other:_Selector):
     def error():
       raise ValueError(f'failed to merge selectors "{self}" and "{other}".')
-    
+
     N = TypeVar('N',int,float)
     def merge_range(x:N|tuple[N,N],y:N|tuple[N,N]) -> N|tuple[N,N]:
       if not isinstance(x,tuple): x = (x,x)
@@ -312,7 +311,7 @@ class Selector(ISelector):
       if y is None: return x
       return merge_range(x,y)
 
-    if self.mode != other.mode: error()
+    if self._mode != other._mode: error()
     if self._limit != other._limit: error()
     if self._sort != other._sort: error()
 
@@ -348,7 +347,7 @@ class Selector(ISelector):
         scores[k] = merge_range(scores[k],v)
       else: scores[k] = v
 
-    advancements:dict[str|McPath, bool | dict[str, bool]] = {**self._advancements}
+    advancements:dict[McPath, bool | dict[str, bool]] = {**self._advancements}
     for k,v in other._advancements.items():
       if k in advancements:
         if isinstance(v,bool):
@@ -402,7 +401,6 @@ class Selector(ISelector):
     level = merge_range_or_none(self._level,other._level)
 
     result = Selector(
-      self.mode,
       type,
       name,
       tag,
@@ -441,7 +439,7 @@ class Selector(ISelector):
       tag:bool|str|list[str]|dict[str,bool]={},
       team:bool|str|dict[str,Literal[False]]={},
       scores:dict[Objective,int|tuple[int,int]]={},
-      advancements:dict[str|McPath,bool|dict[str,bool]]={},
+      advancements:dict[McPath,bool|dict[str,bool]]={},
       predicate:IPredicate|list[IPredicate]|dict[IPredicate,bool]={},
       gamemode:Literal["survival","creative","adventure","spectator"]|dict[Literal["survival","creative","adventure","spectator"],Literal[False]]={},
       nbt:Value[Compound]|dict[Value[Compound],bool]={},
@@ -455,8 +453,7 @@ class Selector(ISelector):
       level:int|tuple[int,int]|None=None
       ):
     """@s[...]"""
-    return Selector(
-      'self',
+    return _SelfSelector(
       type,
       name,
       tag,
@@ -485,7 +482,7 @@ class Selector(ISelector):
       tag:bool|str|list[str]|dict[str,bool]={},
       team:bool|str|dict[str,Literal[False]]={},
       scores:dict[Objective,int|tuple[int,int]]={},
-      advancements:dict[str|McPath,bool|dict[str,bool]]={},
+      advancements:dict[McPath,bool|dict[str,bool]]={},
       predicate:IPredicate|list[IPredicate]|dict[IPredicate,bool]={},
       gamemode:Literal["survival","creative","adventure","spectator"]|dict[Literal["survival","creative","adventure","spectator"],Literal[False]]={},
       nbt:Value[Compound]|dict[Value[Compound],bool]={},
@@ -501,8 +498,7 @@ class Selector(ISelector):
       sort:Literal['nearest','furthest','random','arbitrary']='arbitrary'
       ):
     """@e[...]"""
-    return Selector(
-      'entity',
+    return _EntitySelector(
       type,
       name,
       tag,
@@ -530,7 +526,7 @@ class Selector(ISelector):
       tag:bool|str|list[str]|dict[str,bool]={},
       team:bool|str|dict[str,Literal[False]]={},
       scores:dict[Objective,int|tuple[int,int]]={},
-      advancements:dict[str|McPath,bool|dict[str,bool]]={},
+      advancements:dict[McPath,bool|dict[str,bool]]={},
       predicate:IPredicate|list[IPredicate]|dict[IPredicate,bool]={},
       gamemode:Literal["survival","creative","adventure","spectator"]|dict[Literal["survival","creative","adventure","spectator"],Literal[False]]={},
       nbt:Value[Compound]|dict[Value[Compound],bool]={},
@@ -546,8 +542,7 @@ class Selector(ISelector):
       sort:Literal['nearest','furthest','random','arbitrary']='arbitrary'
       ):
     """@a[...]"""
-    return Selector(
-      'player',
+    return _PlayerSelector(
       {},
       name,
       tag,
@@ -575,7 +570,7 @@ class Selector(ISelector):
       tag:bool|str|list[str]|dict[str,bool]={},
       team:bool|str|dict[str,Literal[False]]={},
       scores:dict[Objective,int|tuple[int,int]]={},
-      advancements:dict[str|McPath,bool|dict[str,bool]]={},
+      advancements:dict[McPath,bool|dict[str,bool]]={},
       predicate:IPredicate|list[IPredicate]|dict[IPredicate,bool]={},
       gamemode:Literal["survival","creative","adventure","spectator"]|dict[Literal["survival","creative","adventure","spectator"],Literal[False]]={},
       nbt:Value[Compound]|dict[Value[Compound],bool]={},
@@ -591,8 +586,7 @@ class Selector(ISelector):
       sort:Literal['nearest','furthest','random','arbitrary']='nearest'
       ):
     """@a[...]"""
-    return Selector(
-      'player',
+    return _PlayerSelector(
       {},
       name,
       tag,
@@ -620,7 +614,7 @@ class Selector(ISelector):
       tag:bool|str|list[str]|dict[str,bool]={},
       team:bool|str|dict[str,Literal[False]]={},
       scores:dict[Objective,int|tuple[int,int]]={},
-      advancements:dict[str|McPath,bool|dict[str,bool]]={},
+      advancements:dict[McPath,bool|dict[str,bool]]={},
       predicate:IPredicate|list[IPredicate]|dict[IPredicate,bool]={},
       gamemode:Literal["survival","creative","adventure","spectator"]|dict[Literal["survival","creative","adventure","spectator"],Literal[False]]={},
       nbt:Value[Compound]|dict[Value[Compound],bool]={},
@@ -636,8 +630,7 @@ class Selector(ISelector):
       sort:Literal['nearest','furthest','random','arbitrary']='random'
       ):
     """@a[...]"""
-    return Selector(
-      'player',
+    return _PlayerSelector(
       {},
       name,
       tag,
@@ -658,12 +651,92 @@ class Selector(ISelector):
       limit,
       sort
       )
+  
+  def ToEntitySelector(self):
+    return _EntitySelector(
+      self._type,
+      self._name,
+      self._tag,
+      self._team,
+      self._scores,
+      self._advancements,
+      self._predicate,
+      self._gamemode,
+      self._nbt,
+      self._origin,
+      self._dx,
+      self._dy,
+      self._dz,
+      self._distance,
+      self._pitch,
+      self._yaw,
+      self._level,
+      self._limit,
+      self._sort
+      )
+
+  def ToPlayerSelector(self):
+    return _PlayerSelector(
+      {},
+      self._name,
+      self._tag,
+      self._team,
+      self._scores,
+      self._advancements,
+      self._predicate,
+      self._gamemode,
+      self._nbt,
+      self._origin,
+      self._dx,
+      self._dy,
+      self._dz,
+      self._distance,
+      self._pitch,
+      self._yaw,
+      self._level,
+      self._limit,
+      self._sort
+      )
+
+  def ToSelfSelector(self):
+    return _SelfSelector(
+      self._type,
+      self._name,
+      self._tag,
+      self._team,
+      self._scores,
+      self._advancements,
+      self._predicate,
+      self._gamemode,
+      self._nbt,
+      self._origin,
+      self._dx,
+      self._dy,
+      self._dz,
+      self._distance,
+      self._pitch,
+      self._yaw,
+      self._level,
+      1,
+      'arbitrary'
+      )
 
   @staticmethod
   def Player(name:str):
-    return PlayerSelector(name)
+    return NameSelector(name)
 
-class PlayerSelector(ISelector):
+_Selector = TypeVar('_Selector',bound=Selector)
+
+class _EntitySelector(Selector):
+  _mode = 'entity'
+
+class _PlayerSelector(Selector):
+  _mode = 'player'
+
+class _SelfSelector(Selector):
+  _mode = 'self'
+
+class NameSelector(ISelector):
   """
   プレイヤー名を直接使うセレクタ
   txkodo[gamemode=survival]
