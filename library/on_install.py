@@ -1,6 +1,7 @@
 from pathlib import Path
 from random import randint
 from datapack import Command, Function, FunctionTag, IDatapackLibrary, Selector, StorageNbt, Str
+from mcpath import McPath
 
 _id_upper = tuple(map(chr, range(ord('A'), ord('Z')+1)))
 _id_lower = tuple(map(chr, range(ord('a'), ord('z')+1)))
@@ -25,17 +26,21 @@ def setBuildId(id:str):
 
 class OnInstall(IDatapackLibrary):
   _uninstall_all_func = Function()
-  install_func = Function(commands=[_uninstall_all_func.call()])
+  install_func = Function(commands=[_uninstall_all_func.Call()])
   uninstall_func = Function()
 
   @classmethod
   def install(cls, datapack_path: Path, datapack_id: str) -> None:
-    build_nbt = StorageNbt('install:')['build_ids'][datapack_id, Str]
+    build_nbt = StorageNbt(f'{datapack_id}:install')['build_id', Str]
+
+    install_mcpath = McPath(f'{datapack_id}:install')
+    uninstall_mcpath = McPath(f'{datapack_id}:uninstall')
+    uninstall_funcs_mcpath = McPath(f'{datapack_id}:core/uninstall')
 
     # installの解決
-    cls.install_func.set_path(f'install:{datapack_id}/install')
+    cls.install_func.set_path(install_mcpath)
     load = Function()
-    load += build_nbt.notMatch(Str(build_id)) + cls.install_func.call()
+    load += build_nbt.notMatch(Str(build_id)) + cls.install_func.Call()
     cls.install_func += build_nbt.set(Str(build_id))
     cls.install_func += Command.Tellraw(Selector.A(),f"[{datapack_id}] installed build_id={build_id}")
     FunctionTag.load.append(load)
@@ -43,21 +48,21 @@ class OnInstall(IDatapackLibrary):
     cls._uninstall_all_func
 
     cls.uninstall_func += Command.Tellraw(Selector.A(),f"[{datapack_id}] uninstalled build_id={build_id}")
-    cls.uninstall_func.set_path(f'install:{datapack_id}/uninstall/{build_id}')
+    cls.uninstall_func.set_path(uninstall_funcs_mcpath/build_id)
     cls.uninstall_func.delete_on_regenerate = False
 
     # uninstall_all
-    uninstallpath = datapack_path/f'data/install/functions/{datapack_id}/uninstall'
-    if uninstallpath.exists():
-      for func in uninstallpath.iterdir():
+    uninstalls_path = uninstall_funcs_mcpath.function_dir(datapack_path)
+    if uninstalls_path.exists():
+      for func in uninstalls_path.iterdir():
         if func.suffix == '.mcfunction':
           if func.stem == build_id:
             raise ValueError(f'build_id {build_id} is not unique id')
-          cls._uninstall_all_func += build_nbt.isMatch(Str(func.stem)) + Command.Function(f'install:{datapack_id}/uninstall/{func.stem}')
+          cls._uninstall_all_func += build_nbt.isMatch(Str(func.stem)) + Command.Function(uninstall_funcs_mcpath/func.stem)
 
     # uninstallの解決
-    uninstall_func = Function(f'install:{datapack_id}/uninstall')
+    uninstall_func = Function(uninstall_mcpath)
 
-    uninstall_func += build_nbt.isMatch(Str(build_id)) + cls.uninstall_func.call()
+    uninstall_func += build_nbt.isMatch(Str(build_id)) + cls.uninstall_func.Call()
 
     cls.uninstall_func += build_nbt.remove()

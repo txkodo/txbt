@@ -1,7 +1,7 @@
 from __future__ import annotations
 from abc import ABCMeta, abstractmethod
 from copy import copy
-from typing import Any, Callable, Generic, Literal, Protocol, TypeAlias, TypeGuard, TypeVar, final, get_args, overload, Union, runtime_checkable
+from typing import Any, Callable, Generic, Iterable, Literal, Protocol, TypeAlias, TypeGuard, TypeVar, final, get_args, overload, Union, runtime_checkable
 from typing_extensions import Self
 from enum import Enum, auto
 import os
@@ -91,10 +91,22 @@ class Position:
     prefix = "~"
 
 class ISubCommandSegment(metaclass=ABCMeta):
+  def __init__(self) -> None:
+    self.accessor:None|Callable[[ICommand],ICommand] = None
+
   def export_subcommand(self) -> str:
     raise NotImplementedError
 
 class IStoreSubCommandSegment(ISubCommandSegment):
+  _store_nbt:Byte
+
+  @classmethod
+  @property
+  def store_nbt(cls) -> Byte:
+    if not hasattr(cls,'_store_nbt'):
+      cls._store_nbt = _pydp_storage['store',Byte]
+    return cls._store_nbt
+
   def __init__(self,is_result:bool) -> None:
     super().__init__()
     self.is_result = is_result
@@ -115,7 +127,7 @@ class IConditionSubCommandSegment(ISubCommandSegment):
   
   def __inv__(self):
     return self.invert()
-  
+
   @property
   def prefix(self) -> str:
     return 'if ' if self.condition else 'unless '
@@ -388,13 +400,76 @@ class SubCommandSegment:
       def export_subcommand(self) -> str:
         return super().prefix + f'bossbar {self.id} {self.case}'
 
-class ICommand(metaclass=ABCMeta):
+class ICommandMeta(ABCMeta):
+  _default_accessor:None|Callable[[ICommand],ICommand] = None
+
+  @property
+  def default_accessor(cls):
+    return cls._default_accessor
+  
+  @default_accessor.setter
+  def default_accessor(cls,value:None|Callable[[ICommand],ICommand]):
+    cls._default_accessor = value
+
+class ICommand(metaclass=ICommandMeta):
   """ any minecraft command """
   def __init__(self) -> None:
     self.subcommands:list[ISubCommandSegment] = []
+    self.accessor:None|Callable[[ICommand],ICommand] = type(self).default_accessor
+
+  @property
+  def has_accessor(self):
+    return self.accessor is not None
 
   def export_command(self) -> str:
     raise NotImplementedError
+
+  def _copy_without_accessor(self):
+    s = copy(self)
+    s.accessor = None
+    return s
+
+  def flatten_accessor(self) -> ICommand:
+    has_accessor = self.has_accessor
+
+    store_count = 0
+    for sub in self.subcommands:
+      has_accessor = has_accessor or (sub.accessor is not None)
+      if isinstance(sub,IStoreSubCommandSegment):
+        store_count += 1
+
+    if not has_accessor:
+      return self
+
+    # 先頭のコマンド
+    head = self._copy_without_accessor()
+    if store_count != 0:
+      head = IStoreSubCommandSegment.store_nbt.storeResult(1) + head
+
+    # 自分自身にアクセッサがある場合
+    accessor = self.accessor
+    if accessor is not None:
+      head = accessor(head)
+
+    for sub in reversed(self.subcommands):
+      accesssor = sub.accessor
+      if isinstance(sub,IStoreSubCommandSegment):
+        store_count -= 1
+        f = Function()
+        if store_count == 0:
+          f += sub.store_nbt.remove()
+        f += head
+        if accesssor is None:
+          f += SubCommand(sub) + (sub.store_nbt.getValue() if sub.is_result else sub.store_nbt.isExists())
+        else:
+          f += accesssor(SubCommand(sub) + (sub.store_nbt.getValue() if sub.is_result else sub.store_nbt.isExists()))
+        head = f.Call()
+      elif accesssor is not None:
+        head = accesssor(SubCommand(sub) + head)
+      else:
+        head = SubCommand(sub) + head
+
+    return head
 
   def export(self) -> str:
     result = self.export_command()
@@ -558,12 +633,16 @@ class SubCommand:
     return self + Execute.Run(command)
 
 class ConditionSubCommand(SubCommand,ICommand):
+  def __init__(self, content: ISubCommandSegment | None = None) -> None:
+    super().__init__(content)
+    self.accessor = None
+
   """ if / unless """
   def export(self) -> str:
     assert self.subcommands
     assert isinstance(self.subcommands[-1],IConditionSubCommandSegment)
     return "execute " + " ".join(sub.export_subcommand() for sub in self.subcommands)
-  
+
   def invert(self):
     if len(self.subcommands) != 1:
       return ValueError('cannot invert multiple subcommands')
@@ -575,6 +654,48 @@ class ConditionSubCommand(SubCommand,ICommand):
 
   def __inv__(self):
     return self.invert()
+
+  def flatten_accessor(self) -> ICommand:
+    has_accessor = False
+
+    store_count = 0
+    for sub in self.subcommands:
+      has_accessor = has_accessor or (sub.accessor is not None)
+      if isinstance(sub,IStoreSubCommandSegment):
+        store_count += 1
+
+    if not has_accessor:
+      return self
+
+    # 先頭のコマンド
+    head = ConditionSubCommand(self.subcommands[-1])
+    if store_count != 0:
+      head = IStoreSubCommandSegment.store_nbt.storeResult(1) + head
+
+    # 自分自身にアクセッサがある場合
+    accessor = self.accessor
+    if accessor is not None:
+      head = accessor(head)
+
+    for sub in reversed(self.subcommands[:-1]):
+      accesssor = sub.accessor
+      if isinstance(sub,IStoreSubCommandSegment):
+        f = Function()
+        store_count -= 1
+        if store_count == 0:
+          f += sub.store_nbt.remove()
+        f += head
+        if accesssor is None:
+          f += SubCommand(sub) + (sub.store_nbt.getValue() if sub.is_result else sub.store_nbt.isExists())
+        else:
+          f += accesssor(SubCommand(sub) + (sub.store_nbt.getValue() if sub.is_result else sub.store_nbt.isExists()))
+        head = f.Call()
+      elif accesssor is not None:
+        head = accesssor(SubCommand(sub) + head)
+      else:
+        head = SubCommand(sub) + head
+
+    return head
 
 class Command:
   class Reload(ICommand):
@@ -600,7 +721,7 @@ class Command:
 
       def export_command(self) -> str:
         return f'function {McPath(self.path).str}'
-  
+
     class Function(ICommand):
       def __init__(self,function:Function) -> None:
         super().__init__()
@@ -608,14 +729,14 @@ class Command:
 
       def export_command(self) -> str:
         raise NotImplementedError
-    
+
     class FunctionTag(ICommand):
       def __init__(self,function:FunctionTag) -> None:
         super().__init__()
         self.holder = function
       
       def export_command(self) -> str:
-        raise NotImplementedError
+        return f'function {self.holder.path}'
 
 
   class Schedule:
@@ -746,7 +867,7 @@ class Command:
         self.tag = tag
 
       def export_command(self) -> str:
-        return f'tag {self.entity.expression()} add {self.tag}'
+        return f'tag {self.entity.expression()} remove {self.tag}'
 
   class SetBlock(ICommand):
     def __init__(self,block:Block,pos:Position.IPosition,mode:Literal['destroy','keep','replace']|None=None) -> None:
@@ -865,11 +986,12 @@ class Command:
         "#000000"
       """
       Command.Particle(id,pos,int(colorcode[1:3])/100,int(colorcode[3:5])/100,int(colorcode[5:7],16)/100,1,0,mode,entity) 
-  
+
   class Data:
     class Get(ICommand):
       def __init__(self,nbt:INbt,scale:float|None=None) -> None:
         super().__init__()
+        self.accessor = nbt.accessor
         self.nbt = nbt
         self.scale = scale
 
@@ -881,6 +1003,7 @@ class Command:
     class Remove(ICommand):
       def __init__(self,nbt:INbt,scale:float|None=None) -> None:
         super().__init__()
+        self.accessor = nbt.accessor
         self.nbt = nbt
         self.scale = scale
 
@@ -902,6 +1025,7 @@ class Command:
         class Value(ICommand):
           def __init__(self,target:NBT,value:Value[NBT]) -> None:
             super().__init__()
+            self.accessor = target.accessor
             self.target = target
             self.value = value
 
@@ -911,8 +1035,30 @@ class Command:
         class From(ICommand):
           def __init__(self,target:NBT,source:NBT) -> None:
             super().__init__()
+
             self.target = target
             self.source = source
+
+            match (target.accessor,source.accessor):
+              case (None,None):
+                self.accessor = None
+              case (None,src):
+                self.accessor = src
+              case (tgt,None):
+                self.accessor = tgt
+              case (tgt,src):
+                assert tgt is not None
+                assert src is not None
+                temp = _pydp_storage['tmp',target.cls]
+                def accessor(cmd:ICommand):
+                  func = Function()
+                  func += temp.remove()
+                  func += Command.Data.Modify.Set.From(temp,source).flatten_accessor()
+                  func += Command.Data.Modify.Set.From(target,temp).flatten_accessor()
+                  func += cmd
+                  func += src(cmd)
+                  return func.Call()
+                self.accessor = accessor
 
           def export_command(self) -> str:
             return f'data modify {self.target.path} set from {self.source.path}'
@@ -941,6 +1087,31 @@ class Command:
             self.target = target
             self.source = source
 
+            match (target.accessor,source.accessor):
+              case (None,None):
+                self.accessor = None
+              case (None,src):
+                self.accessor = src
+              case (tgt,None):
+                self.accessor = tgt
+              case (tgt,src):
+                assert tgt is not None
+                assert src is not None
+                temp = _pydp_storage['tmp',target.cls]
+                _source = source.copy()
+                _source.accessor = None
+                _target = target.copy()
+                _target.accessor = None
+                def accessor(cmd:ICommand):
+                  func = Function()
+                  func += temp.remove()
+                  func += Command.Data.Modify.Set.From(temp,_source).flatten_accessor()
+                  func += Command.Data.Modify.Merge.From(_target,temp).flatten_accessor()
+                  func += cmd
+                  func += src(cmd)
+                  return func.Call()
+                self.accessor = accessor
+
           def export_command(self) -> str:
             return f'data modify {self.target.path} merge from {self.source.path}'
 
@@ -968,6 +1139,31 @@ class Command:
             self.target = target
             self.source = source
 
+            match (target.accessor,source.accessor):
+              case (None,None):
+                self.accessor = None
+              case (None,src):
+                self.accessor = src
+              case (tgt,None):
+                self.accessor = tgt
+              case (tgt,src):
+                assert tgt is not None
+                assert src is not None
+                temp = _pydp_storage['tmp',target.cls]
+                _source = source.copy()
+                _source.accessor = None
+                _target = target.copy()
+                _target.accessor = None
+                def accessor(cmd:ICommand):
+                  func = Function()
+                  func += temp.remove()
+                  func += Command.Data.Modify.Set.From(temp,_source).flatten_accessor()
+                  func += Command.Data.Modify.Append.From(_target,temp).flatten_accessor()
+                  func += cmd
+                  func += src(cmd)
+                  return func.Call()
+                self.accessor = accessor
+
           def export_command(self) -> str:
             return f'data modify {self.target.path} append from {self.source.path}'
 
@@ -994,6 +1190,31 @@ class Command:
             super().__init__()
             self.target = target
             self.source = source
+
+            match (target.accessor,source.accessor):
+              case (None,None):
+                self.accessor = None
+              case (None,src):
+                self.accessor = src
+              case (tgt,None):
+                self.accessor = tgt
+              case (tgt,src):
+                assert tgt is not None
+                assert src is not None
+                temp = _pydp_storage['tmp',target.cls]
+                _source = source.copy()
+                _source.accessor = None
+                _target = target.copy()
+                _target.accessor = None
+                def accessor(cmd:ICommand):
+                  func = Function()
+                  func += temp.remove()
+                  func += Command.Data.Modify.Set.From(temp,_source).flatten_accessor()
+                  func += Command.Data.Modify.Prepend.From(_target,temp).flatten_accessor()
+                  func += cmd
+                  func += src(cmd)
+                  return func.Call()
+                self.accessor = accessor
 
           def export_command(self) -> str:
             return f'data modify {self.target.path} prepend from {self.source.path}'
@@ -1023,6 +1244,31 @@ class Command:
             self.target = target
             self.source = source
             self.index = index
+
+            match (target.accessor,source.accessor):
+              case (None,None):
+                self.accessor = None
+              case (None,src):
+                self.accessor = src
+              case (tgt,None):
+                self.accessor = tgt
+              case (tgt,src):
+                assert tgt is not None
+                assert src is not None
+                temp = _pydp_storage['tmp',target.cls]
+                _source = source.copy()
+                _source.accessor = None
+                _target = target.copy()
+                _target.accessor = None
+                def accessor(cmd:ICommand):
+                  func = Function()
+                  func += temp.remove()
+                  func += Command.Data.Modify.Set.From(temp,_source).flatten_accessor()
+                  func += Command.Data.Modify.Insert.From(_target,index,temp).flatten_accessor()
+                  func += cmd
+                  func += src(cmd)
+                  return func.Call()
+                self.accessor = accessor
 
           def export_command(self) -> str:
             return f'data modify {self.target.path} insert {self.index} from {self.source.path}'
@@ -1282,7 +1528,7 @@ class _DatapackMeta(type):
   _default_path= McPath('minecraft:txbt')
 
   @property
-  def default_path(cls):
+  def default_path(cls) -> McPath:
     return cls._default_path
 
   @default_path.setter
@@ -1331,8 +1577,7 @@ class Datapack(metaclass=_DatapackMeta):
   def export(
     path:str|Path,
     id:str,
-    default_namespace:str|None=None,
-    default_folder:str|None=None,
+    default_path:str|McPath|None=None,
     description:str|None=None,
     export_imp_doc:bool|None=None
     ):
@@ -1368,8 +1613,7 @@ class Datapack(metaclass=_DatapackMeta):
 
     path = Path(path)
 
-    if default_namespace is not None: Datapack.default_namespace = default_namespace
-    if default_folder is not None: Datapack.default_folder = default_folder
+    if default_path is not None: Datapack.default_path = McPath(default_path)
     if description is not None: Datapack.description = description
     if export_imp_doc is not None: Datapack.export_imp_doc = export_imp_doc
 
@@ -1405,6 +1649,10 @@ class Datapack(metaclass=_DatapackMeta):
     "description":{description}
   }}
 }}""")
+
+    for f in Function.functions:
+      # function.taggedをTrueにする
+      f.flatten_accessor()
 
     for f in FunctionTag.functiontags:
       # function.taggedをTrueにする
@@ -1522,6 +1770,8 @@ class Function:
   callstate:_FuncState
   default_access_modifier:FunctionAccessModifier = FunctionAccessModifier.API
 
+  _path:McPath|None
+
   @overload
   def __init__(self,path:str|McPath,access_modifier:FunctionAccessModifier|None=None,description:str|None=None,delete_on_regenerate:bool=True,*_,commands:None|list[ICommand]=None) -> None:pass
   @overload
@@ -1572,17 +1822,20 @@ class Function:
     self.append(value)
     return self
 
-  def append(self,*commands:ICommand):
+  def append(self,command:ICommand):
+    if isinstance(command,Command.Function.Function):
+      self._children.add(command.holder)
+    self.commands.append(command)
+
+  def extend(self,commands:Iterable[ICommand]):
     for command in commands:
-      if isinstance(command,Command.Function.Function):
-        self._children.add(command.holder)
-    self.commands.extend(commands)
+      self.append(command)
 
   @property
   def expression(self) -> str:
     return self.path.str
 
-  def call(self) -> ICommand:
+  def Call(self) -> ICommand:
     return Command.Function(self)
 
   def schedule(self,tick:int,append:bool=False) -> ICommand:
@@ -1604,6 +1857,13 @@ class Function:
 
   def _ismultiple(self):
     return len(self.commands) > 1
+
+  def flatten_accessor(self):
+    """アクセッサを解決"""
+    commands:list[ICommand] = []
+    for command in self.commands:
+      commands.append(command.flatten_accessor())
+    self.commands = commands
 
   def check_call_relation(self):
     """呼び出し先一覧を整理"""
@@ -2147,26 +2407,27 @@ class NbtPath:
 T = TypeVar('T')
 
 class INbt:
-
-  class Value:
-    pass
-
-  _cls:type[Self]
+  cls:type[Self]
   _path:NbtPath.INbtPath
-  
+  accessor:Callable[[ICommand],ICommand]|None
+
   def __init_subclass__(cls) -> None:
     super().__init_subclass__()
-    cls._cls = cls
+    cls.cls = cls
 
-  def __new__(cls:type[NBT],value:NbtPath.INbtPath,type:type[NBT]) -> NBT:
+  def __new__(cls:type[NBT],value:NbtPath.INbtPath,type:type[NBT],accessor:Callable[[ICommand],ICommand]|None=None) -> NBT:
     result = super().__new__(cls)
-    result._cls = type
+    result.cls = type
     result._path = value
+    result.accessor = accessor
     return result
 
   @property
   def path(self):
     return self._path
+
+  def copy(self):
+    return self.cls(self._path,self.cls,self.accessor)
 
   def _get(self,scale:float|None=None) -> ICommand:
     return Command.Data.Get(self,scale)
@@ -2218,13 +2479,13 @@ class INbtGeneric(INbt,Generic[T]):
   @overload
   def __new__(cls:type[INBTG],value:T) -> Value[INBTG]:pass
   @overload
-  def __new__(cls:type[INBTG],value:NbtPath.INbtPath,type:type[INBTG]) -> INBTG:pass
-  def __new__(cls:type[INBTG],value:NbtPath.INbtPath|T,type:type[INBTG]|None=None):
+  def __new__(cls:type[INBTG],value:NbtPath.INbtPath,type:type[INBTG],accessor:Callable[[ICommand],ICommand]|None=None) -> INBTG:pass
+  def __new__(cls:type[INBTG],value:NbtPath.INbtPath|T,type:type[INBTG]|None=None,accessor:Callable[[ICommand],ICommand]|None=None):
     if isinstance(value,NbtPath.INbtPath):
       assert type is not None
       if isinstance(value,NbtPath.Root|NbtPath.RootMatch):
         raise ValueError(f'nbt root cannot be {cls.__name__}')
-      return super().__new__(cls,value,type)
+      return super().__new__(cls,value,type,accessor)
     else:
       return cls._str(value)
 
@@ -2246,7 +2507,7 @@ class INum(INbtGeneric[NUMBER]):
     assert issubclass(cls,INum)
     if value < cls._min or cls._max < value:
       raise ValueError(f'{cls.mode} must be in range {cls._min}..{cls._max}')
-    return Value(cls._cls,value,cls._srtingifier)
+    return Value(cls.cls,value,cls._srtingifier)
 
   @classmethod
   def _srtingifier(cls,value:Any):
@@ -2304,10 +2565,10 @@ class IArray(INbt,Generic[NBT]):
   _arg:type[NBT]
 
   def __getitem__(self,index:int) -> NBT:
-    return self._arg(NbtPath.Index(self._path,index),self._arg)
+    return self._arg(NbtPath.Index(self._path,index),self._arg,self.accessor)
 
   def all(self) -> NBT:
-    return self._arg(NbtPath.All(self._path),self._arg)
+    return self._arg(NbtPath.All(self._path),self._arg,self.accessor)
 
   def getLength(self,scale:float|None=None) -> ICommand:return super()._get(scale)
   _cls_name:str
@@ -2319,13 +2580,13 @@ class IArray(INbt,Generic[NBT]):
   @overload
   def __new__(cls:type[ARRAY],value:list[Value[NBT]]) -> Value[ARRAY]:pass
   @overload
-  def __new__(cls:type[ARRAY],value:NbtPath.INbtPath,type:type[ARRAY]) -> ARRAY:pass
-  def __new__(cls:type[ARRAY],value:NbtPath.INbtPath|list[Value[NBT]],type:type[ARRAY]|None=None):
+  def __new__(cls:type[ARRAY],value:NbtPath.INbtPath,type:type[ARRAY],accessor:Callable[[ICommand],ICommand]|None=None) -> ARRAY:pass
+  def __new__(cls:type[ARRAY],value:NbtPath.INbtPath|list[Value[NBT]],type:type[ARRAY]|None=None,accessor:Callable[[ICommand],ICommand]|None=None):
     if isinstance(value,NbtPath.INbtPath):
       assert type is not None
       if isinstance(value,NbtPath.Root|NbtPath.RootMatch):
         raise ValueError(f'nbt root cannot be {cls._cls_name}')
-      result = super().__new__(cls,value,type)
+      result = super().__new__(cls,value,type,accessor)
       result._arg = cls._get_arg(type)
       return result
     else:
@@ -2346,7 +2607,7 @@ class List(IArray[NBT]):
     return get_args(c)[0]
 
   def filterAll(self:List[Compound],compound:Value[Compound]) -> Compound:
-    return self._arg(NbtPath.AllMatch(self._path,compound),self._arg)
+    return self._arg(NbtPath.AllMatch(self._path,compound),self._arg,self.accessor)
 
 class ByteArray(IArray[Byte]):
   _prefix='B;'
@@ -2366,11 +2627,11 @@ class Compound(INbt):
   @overload
   def __new__(cls,value:dict[str,Value[INbt]]) -> Value[Compound]:pass
   @overload
-  def __new__(cls,value:NbtPath.INbtPath,type:type[Compound]) -> Compound:pass
-  def __new__(cls,value:NbtPath.INbtPath|dict[str,Value[INbt]],type:type[Compound]|None=None):
+  def __new__(cls,value:NbtPath.INbtPath,type:type[Compound],accessor:Callable[[ICommand],ICommand]|None=None) -> Compound:pass
+  def __new__(cls,value:NbtPath.INbtPath|dict[str,Value[INbt]],type:type[Compound]|None=None,accessor:Callable[[ICommand],ICommand]|None=None):
     if isinstance(value,NbtPath.INbtPath):
       assert type is not None
-      return super().__new__(cls,value,type)
+      return super().__new__(cls,value,type,accessor)
     else:
       return Value(cls, value,cls._stringify)
 
@@ -2401,11 +2662,13 @@ class Compound(INbt):
     """子要素 self.child"""
     match value:
       case str():
-        return Compound(NbtPath.Child(self._path,value),Compound)
+        result = Compound(NbtPath.Child(self._path,value),Compound,self.accessor)
       case (name,r):
-        return r(NbtPath.Child(self._path,name),r)
+        result = r(NbtPath.Child(self._path,name),r,self.accessor)
       case _:
-        return value(NbtPath.Child(self._path,gen_id(prefix=':')),value)
+        result = value(NbtPath.Child(self._path,gen_id(prefix=':')),value,self.accessor)
+    return result
+
 
   def childMatch(self,child:str,match:Value[Compound]):
     """条件付き子要素 self.child{foo:bar}"""
@@ -2444,9 +2707,7 @@ class EntityNbt:
   def __new__(cls,selector:ISelector) -> Compound:
     return Compound(NbtPath.Root('entity',selector.expression()),Compound)
 
-
-
-
+_pydp_storage = StorageNbt('pydp:')
 
 
 
@@ -2681,8 +2942,8 @@ class ISelector:
   def score(self,objective:Objective):
     return Scoreboard(objective,self)
 
-  def PleaseMyDat(self):
-    return self.As() + OhMyDat.Please()
+  def myDat(self):
+    return OhMyDat.getData(self)
 
   def TagAdd(self,id:str):
     return Command.Tag.Add(self,id)
@@ -3131,11 +3392,6 @@ class JsonText:
 
 
 
-
-
-
-
-
 # 本来は別ファイルとしてdatapack.libralyに格納すべきだが、
 # 組み込んでおいたほうがエンティティセレクタから呼び出せて便利なので組み込む
 class OhMyDat(IDatapackLibrary):
@@ -3156,45 +3412,129 @@ class OhMyDat(IDatapackLibrary):
       cls.rmtree(datapack_path.parent/"OhMyDat")
 
   @classmethod
-  def Please(cls):
+  def Please(cls,holder:Scoreboard|ISelector|ICommand|None=None):
+    """
+    scoreboardのidのデータ空間にアクセス
+
+    OhMyDat.getData で生成したデータから自動で呼ばれるため、基本的に明示的に呼ぶ必要はない
+
+    holder : データ保持者
+
+    +  None : 実行者本人
+
+    +  ISelector : エンティティセレクタ (データを持っているエンティティ)
+
+    +  Scoreboard : スコアボードの値のIDを持つエンティティ
+
+    +  ICommand : コマンドの実行結果のIDをもつエンティティ
+    """
     cls.using = True
-    return Command.Function('#oh_my_dat:please')
+    match holder:
+      case None:
+        return Command.Function('#oh_its_dat:please')
+      case ISelector():
+        return holder.As() + Command.Function('#oh_its_dat:please')
+      case Scoreboard():
+        f = Function()
+        f += cls._scoreboard.Oparation('=',holder)
+        f += Command.Function('#oh_its_dat:please')
+        return f.Call()
+      case ICommand():
+        f = Function()
+        f += cls._scoreboard.StoreResult() + holder
+        f += Command.Function('#oh_its_dat:please')
+        return f.Call()
 
   _storage = StorageNbt('oh_my_dat:')
   _data = _storage['_',List[List[List[List[List[List[List[List[Compound]]]]]]]]][-4][-4][-4][-4][-4][-4][-4][-4]
+
+  @staticmethod
+  def _accessor(cmd:ICommand):
+    f = Function()
+    f += OhMyDat.Please()
+    f += cmd
+    return f.Call()
+
+  _data_self = _data.copy()
+  _data_self.accessor = _accessor
+
   _scoreboard = Scoreboard(Objective('OhMyDatID'),Selector.Player('_'))
 
-  @property
   @classmethod
-  def data(cls):
-    """エンティティごとのデータが格納されているstorage (Compound)"""
+  def getData(cls,holder:Scoreboard|ISelector|None=None):
+    """
+    エンティティに紐づいたデータ空間を返す
+
+    データへのアクセス直前に #oh_my_dat:please / #oh_its_dat:please が自動的に呼ばれる
+
+    holder : データ保持者
+
+    +  Scoreboard : エンティティID (OhMyDat.PleaseScore の引数と同じ)
+
+    +  ISelector : エンティティセレクタ (データを持っているエンティティ)
+
+    +  None : 実行者本人
+
+    +  ICommand : コマンドの実行結果のIDをもつエンティティ
+    """
     cls.using = True
+    match holder:
+      case None:
+        return cls._data_self
+      case _:
+        def _accessor(cmd:ICommand):
+          f = Function()
+          f += OhMyDat.Please(holder)
+          f += cmd
+          return f.Call()
+        d = cls._data.copy()
+        d.accessor = _accessor
+        return d
+
+  @classmethod
+  def getDataUnsafe(cls):
+    """
+    エンティティに紐づいたデータ空間を返す
+
+    データへのアクセス時に #oh_my_dat:please / #oh_its_dat:please が呼ばれず、
+
+    どのエンティティに紐づいているかが文脈依存であるため原則使用しない
+
+    紐づいているエンティティが確実に一意である状況でのみ使用可能
+
+    どのエンティティのデータなのかはそれまでに呼ばれた #oh_my_dat:please / #oh_its_dat:please に左右される
+    """
     return cls._data
 
-  @classmethod
-  def PleaseScore(cls,score:Scoreboard):
-    """scoreboardのidにアクセス"""
-    cls.using = True
-    f = Function()
-    f += cls._scoreboard.Oparation('=',score)
-    f += Command.Function('#oh_its_dat:please')
-    return f.call()
+  # @classmethod
+  # def Release(cls):
+  #   """
+  #   明示的にストレージを開放
 
-  @classmethod
-  def PleaseResult(cls,cmd:ICommand):
-    """コマンドの実行結果のidにアクセス"""
-    cls.using = True
-    f = Function()
-    f += cls._scoreboard.StoreResult() + cmd
-    f += Command.Function('#oh_its_dat:please')
-    return f.call()
+  #   他のデータパックのデータを消してしまう恐れがあるため使わない
+  #   """
+  #   cls.using = True
+  #   return Command.Function('#oh_my_dat:release')
 
-  @classmethod
-  def Release(cls):
-    """
-    明示的にストレージを開放
+# class IPredicate:
+#   predicates:list[IPredicate] = []
+#   def __init__(self,path:McPath|None=None) -> None:
+#     IPredicate.predicates.append(self)
+#     self.path = path
+  
+#   def export(self):
+#     if self.path is None:
+#       path = Datapack.default_path/gen_id(upper=False,length=24)
+#     else:
+#       path = self.path
+#     self.export_dict(self)
+  
+#   def export_dict(self)
 
-    他のデータパックのデータを消してしまう恐れがあるため使わない
-    """
-    cls.using = True
-    return Command.Function('#oh_my_dat:release')
+# class Predicate:
+#   class EntityScores(IPredicate):
+#     def __init__(self,scores:dict[Objective,int|tuple[int,int]],entity:Literal['this','direct_killer','killer','killer_player']='this',path:McPath|None=None) -> None:
+#       super().__init__()
+#       self.entity = entity
+#       self.scores = scores
+

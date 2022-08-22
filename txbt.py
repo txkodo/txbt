@@ -224,8 +224,8 @@ class IEvent(metaclass=ABCMeta):
     enter += Command.Tag.Add(Selector.S(), _ticking_tag)
     enter += IEvent._objective_tick.score(Selector.S()).Add(1)
 
-    exit += IEvent.untick.call()
-    abort += IEvent.untick.call()
+    exit += IEvent.untick.Call()
+    abort += IEvent.untick.Call()
 
   @property
   def hasTickTag(self):
@@ -241,10 +241,10 @@ class IEvent(metaclass=ABCMeta):
 
     self._abort = Function()
     self._abort += self.deactivate
-    abort += self.isActive + self._abort.call()
+    abort += self.isActive + self._abort.Call()
 
     _tick = Function()
-    tick += self.isActive + _tick.call()
+    tick += self.isActive + _tick.Call()
 
     func += self.activate
 
@@ -286,7 +286,7 @@ class IEvent(metaclass=ABCMeta):
     _init = Function()
 
     _main = Function()
-    _main += _init.call()
+    _main += _init.Call()
 
     tick = Function()
     FunctionTag.tick.append(tick)
@@ -294,8 +294,8 @@ class IEvent(metaclass=ABCMeta):
     abort.description = """イベントを中断する"""
     exit = self._export(_main, abort, tick, _init, True)
 
-    main += self.notActive + _main.call()
-    init += self.notActive + _init.call()
+    main += self.notActive + _main.Call()
+    init += self.notActive + _init.Call()
 
     exit += IEvent._flags.remove()
 
@@ -318,20 +318,20 @@ class IEvent(metaclass=ABCMeta):
     _init = Function()
 
     _main = Function()
-    _main += _init.call()
+    _main += _init.Call()
 
     tick = Function()
     FunctionTag.tick.append(tick)
     _tick = Function()
 
-    tick += Selector.E(tag=_ticking_tag).As().At(Selector.S()) + _tick.call()
+    tick += Selector.E(tag=_ticking_tag).As().At(Selector.S()) + _tick.Call()
 
     abort.description = """イベントを中断する
 該当エンティティとして実行すること"""
     self._export(_main, abort, _tick, _init, True)
 
-    main += self.notActive + _main.call()
-    init += self.notActive + _init.call()
+    main += self.notActive + _main.Call()
+    init += self.notActive + _init.Call()
 
     del ScoreboardIterator.main
 
@@ -390,7 +390,7 @@ class Run(IEvent):
   def _export(self, func: Function, abort: Function, tick: Function, init: Function, resultless: bool) -> Function:
     self.getId()
     self._abort = Function()
-    func.append(*self.commands[:-1])
+    func.extend(self.commands[:-1])
     if resultless:
       func += self.commands[-1]
     else:
@@ -419,12 +419,12 @@ class Wait(IEvent):
     exit = Function()
     self.useTickTag(func,exit,abort)
     if self.tick == 1:
-      exit.call()
+      exit.Call()
     else:
       score = self.getScore()
       func += score.Set(self.tick)
       tick += score.Remove(1)
-      tick += score.IfMatch(0) + exit.call()
+      tick += score.IfMatch(0) + exit.Call()
       exit += score.Reset()
     if not resultless:
       exit += self.succeed
@@ -443,14 +443,14 @@ class WaitFunctionCall(IEvent):
 
   def main_server(self, func: Function, abort: Function, tick: Function, init: Function, resultless: bool) -> Function:
     exit = Function()
-    self.trigger += self.isActive + exit.call()
+    self.trigger += self.isActive + exit.Call()
     exit += self.succeed
     return exit
 
   def main_entity(self, func: Function, abort: Function, tick: Function, init: Function, resultless: bool) -> Function:
     exit = Function()
     # TODO: selectorをentity_type等で絞っておくことで検索効率を上げる
-    self.trigger += Selector.E(tag=self._tag_entity).As().At(Selector.S()) + exit.call()
+    self.trigger += Selector.E(tag=self._tag_entity).As().At(Selector.S()) + exit.Call()
     exit += self.succeed
     return exit
 
@@ -481,12 +481,12 @@ class WaitWhile(IEvent):
     exit = Function()
 
     abort += enter.clear_schedule()
-    func += enter.call()
+    func += enter.Call()
 
     enter.append(*self.pre)
     enter += IEvent._temp_flag.storeSuccess(1) + self.condition
     enter.append(*self.post)
-    enter += IEvent._temp_flag.isMatch(Byte(0)) + exit.call()
+    enter += IEvent._temp_flag.isMatch(Byte(0)) + exit.Call()
     enter += self.isActive + enter.schedule(1)
 
     if not resultless:
@@ -500,10 +500,10 @@ class WaitWhile(IEvent):
     enter = Function()
 
     abort += enter.clear_schedule()
-    func += enter.call()
+    func += enter.Call()
 
     enter += IEvent._temp_flag.storeSuccess(1) + self.condition
-    enter += IEvent._temp_flag.isMatch(Byte(0)) + exit.call()
+    enter += IEvent._temp_flag.isMatch(Byte(0)) + exit.Call()
     enter += self.isActive + enter.schedule(1)
 
     if not resultless:
@@ -537,12 +537,12 @@ class WaitUntil(IEvent):
     exit = Function()
 
     abort += enter.clear_schedule()
-    func += enter.call()
+    func += enter.Call()
 
     enter.append(*self.pre)
     enter += IEvent._temp_flag.storeSuccess(1) + self.condition
     enter.append(*self.post)
-    enter += IEvent._temp_flag.isMatch(Byte(1)) + exit.call()
+    enter += IEvent._temp_flag.isMatch(Byte(1)) + exit.Call()
     enter += self.isActive + enter.schedule(1)
 
     if not resultless:
@@ -556,10 +556,10 @@ class WaitUntil(IEvent):
     enter = Function()
 
     abort += enter.clear_schedule()
-    func += enter.call()
+    func += enter.Call()
 
     enter += IEvent._temp_flag.storeSuccess(1) + self.condition
-    enter += IEvent._temp_flag.isMatch(Byte(1)) + exit.call()
+    enter += IEvent._temp_flag.isMatch(Byte(1)) + exit.Call()
     enter += self.isActive + enter.schedule(1)
 
     if not resultless:
@@ -588,11 +588,11 @@ class LoopWhile(IDecorator):
     exit = Function()
     enter = Function()
 
-    func += enter.call()
+    func += enter.Call()
 
     func = self.sub._export(enter, abort, tick, init,False)
-    func += self.isFailed + exit.call()
-    func += self.isActive + enter.call()
+    func += self.isFailed + exit.Call()
+    func += self.isActive + enter.Call()
 
     return exit
 
@@ -610,11 +610,11 @@ class LoopUntil(IDecorator):
     exit = Function()
     enter = Function()
 
-    func += enter.call()
+    func += enter.Call()
 
     func = self.sub._export(enter, abort, tick, init,False)
-    func += self.isSucceeded + exit.call()
-    func += self.isActive + enter.call()
+    func += self.isSucceeded + exit.Call()
+    func += self.isActive + enter.Call()
     return exit
 
   @property
@@ -627,9 +627,9 @@ class LoopInfinit(IDecorator):
     exit = Function()
     enter = Function()
 
-    func += enter.call()
+    func += enter.Call()
     func = self.sub._export(enter,abort,tick,init,True)
-    func += enter.call()
+    func += enter.Call()
     return exit
 
   @property
@@ -703,10 +703,10 @@ class InitAbort(IWrapper):
 
   def _export(self, func: Function, abort: Function, tick: Function, init: Function, resultless:bool) -> Function:
     if self.init:
-      init += self.init.call()
+      init += self.init.Call()
     exit = super()._export(func, abort, tick, init, False)
     if self.abort:
-      self.sub._abort += self.abort.call()
+      self.sub._abort += self.abort.Call()
     return exit
 
 # class Scope(IWrapper):
@@ -799,8 +799,8 @@ class All(IComposit):
       func = sub._export(func,abort,tick,init,False)
       ScoreboardIterator.main.rewind(index)
       next = Function()
-      func += self.isFailed + fail.call()
-      func += self.isActive + next.call()
+      func += self.isFailed + fail.Call()
+      func += self.isActive + next.Call()
       func = next
 
     sub = self.subs[-1]
@@ -813,8 +813,8 @@ class All(IComposit):
     if not resultless:
       fail += self.fail
 
-    fail += exit.call()
-    func += exit.call()
+    fail += exit.Call()
+    func += exit.Call()
     ScoreboardIterator.main.toHead()
     return exit
 
@@ -840,8 +840,8 @@ class Any(IComposit):
       func = sub._export(func,abort,tick,init,False)
       ScoreboardIterator.main.rewind(index)
       next = Function()
-      func += self.isSucceeded + succeed.call()
-      func += self.isActive + next.call()
+      func += self.isSucceeded + succeed.Call()
+      func += self.isActive + next.Call()
       func = next
 
     sub = self.subs[-1]
@@ -854,8 +854,8 @@ class Any(IComposit):
     if not resultless:
       succeed += self.succeed
 
-    succeed += exit.call()
-    func += exit.call()
+    succeed += exit.Call()
+    func += exit.Call()
     ScoreboardIterator.main.toHead()
     return exit
 
@@ -883,7 +883,7 @@ class ParallelTraverse(IComposit):
     for sub in self.subs:
       end = sub._export(func, abort, tick, init, True)
       end += score.Remove(1)
-      end += score.IfMatch(0) + exit.call()
+      end += score.IfMatch(0) + exit.Call()
 
     if not resultless:
       exit += self.succeed
@@ -908,15 +908,15 @@ class ParallelFirst(IComposit):
     abt = Function()
     for sub in self.subs:
       f = Function()
-      func += self.isActive + f.call()
+      func += self.isActive + f.Call()
       end = sub._export(func,abt,tick,init,resultless)
       if not sub.isInfinite:
-        end += exit.call()
+        end += exit.Call()
 
-    abort += abt.call()
+    abort += abt.Call()
 
     if not self.isInfinite:
-      exit += abt.call()
+      exit += abt.Call()
 
     return exit
 
@@ -941,22 +941,22 @@ class ParallelAny(IComposit):
     abt = Function()
     for sub in self.subs:
       f = Function()
-      func += Selector.S(tag=self._tag_entity).IfEntity() + f.call()
+      func += Selector.S(tag=self._tag_entity).IfEntity() + f.Call()
       end = sub._export(f,abt,init,tick,False)
       if not sub.isInfinite:
         end += count.Remove(1)
-        end += self.isSucceeded + success.call()
-        end += self.isActive + count.IfMatch(0) + failure.call()
+        end += self.isSucceeded + success.Call()
+        end += self.isActive + count.IfMatch(0) + failure.Call()
 
-    abort += abt.call()
+    abort += abt.Call()
 
     if self.isInfinite:
       return exit
 
-    success += abt.call()
-    success += exit.call()
+    success += abt.Call()
+    success += exit.Call()
 
-    failure += exit.call()
+    failure += exit.Call()
 
     return exit
 
@@ -982,22 +982,22 @@ class ParallelAll(IComposit):
     abt = Function()
     for sub in self.subs:
       f = Function()
-      func += Selector.S(tag=self._tag_entity).IfEntity() + f.call()
+      func += Selector.S(tag=self._tag_entity).IfEntity() + f.Call()
       end = sub._export(f,abt,init,tick,False)
       if not sub.isInfinite:
         end += count.Remove(1)
-        end += self.isFailed + failure.call()
-        end += self.isActive + count.IfMatch(0) + success.call()
+        end += self.isFailed + failure.Call()
+        end += self.isActive + count.IfMatch(0) + success.Call()
 
-    abort += abt.call()
+    abort += abt.Call()
 
     if self.isInfinite:
       return exit
 
-    success += exit.call()
+    success += exit.Call()
 
-    failure += abt.call()
-    failure += exit.call()
+    failure += abt.Call()
+    failure += exit.Call()
 
     return exit
 
@@ -1019,7 +1019,5 @@ def getEntityScope():
   各エンティティの各イベントごとの変数空間となっているので衝突しない
 
   サーバーイベントで使うと壊れるので使わないこと
-
-  変数にアクセスす直前に OhMyDat.Please() を必ず実行すること
   """
-  return OhMyDat.data['kdbt'][IEvent.nextId()]
+  return OhMyDat.getData()['kdbt'][IEvent.nextId()]

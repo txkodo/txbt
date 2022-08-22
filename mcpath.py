@@ -85,6 +85,10 @@ class McPath:
     assert not self.istag
     return root/'data'/self._namespace/'functions'/('/'.join(self._parts)+'.mcfunction')
 
+  def function_dir(self,root:Path):
+    assert not self.istag
+    return root/'data'/self._namespace/'functions'/('/'.join(self._parts))
+
   def function_tag(self,root:Path):
     assert self.istag
     return root/'data'/self._namespace/'tags/functions'/('/'.join(self._parts)+'.json')
