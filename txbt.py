@@ -4,10 +4,11 @@ from copy import copy
 from enum import Enum, auto
 from random import randint
 from typing_extensions import Self
-from datapack import Byte, Command, Compound, ConditionSubCommand, FunctionTag, ICommand, OhMyDat, Scoreboard, ISelector, Function, Objective, StorageNbt, Value
+from datapack import Byte, Command, Compound, ConditionSubCommand, FunctionTag, ICommand, OhMyDat, Scoreboard, Function, Objective, StorageNbt, Value
 from id import gen_id
 from library.on_install import OnInstall
 from mcpath import McPath
+from selector import Selector
 
 
 # class TxBtDat(IDatapackLibrary):
@@ -85,11 +86,11 @@ class ScoreboardIterator:
       match IEvent.mode:
         case _ExportMode.ENTITY:
           obj = Objective(gen_id(prefix='txbt:'))
-          score = obj.score(ISelector.S())
+          score = obj.score(Selector.S())
           OnInstall.install_func += obj.Add()
           OnInstall.uninstall_func += obj.Remove()
         case _ExportMode.SERVER:
-          score = IEvent.objective.score(ISelector.Player(IEvent.nextId()))
+          score = IEvent.objective.score(Selector.Player(IEvent.nextId()))
       self.scores.append(score)
       return score
     else:
@@ -163,7 +164,7 @@ class IEvent(metaclass=ABCMeta):
       case _ExportMode.SERVER:
         return self._state_server.set(Byte(-1))
       case _ExportMode.ENTITY:
-        return Command.Tag.Add(ISelector.S(),self._tag_entity)
+        return Command.Tag.Add(Selector.S(),self._tag_entity)
   
   def getScore(self):
     return next(ScoreboardIterator.main)
@@ -174,7 +175,7 @@ class IEvent(metaclass=ABCMeta):
       case _ExportMode.SERVER:
         return self._state_server.remove()
       case _ExportMode.ENTITY:
-        return Command.Tag.Remove(ISelector.S(), self._tag_entity)
+        return Command.Tag.Remove(Selector.S(), self._tag_entity)
 
   @property
   def isActive(self):
@@ -182,7 +183,7 @@ class IEvent(metaclass=ABCMeta):
       case _ExportMode.SERVER:
         return self._state_server.isMatch(Byte(-1))
       case _ExportMode.ENTITY:
-        return ISelector.S(tag=self._tag_entity).IfEntity()
+        return Selector.S(tag=self._tag_entity).IfEntity()
 
   @property
   def notActive(self):
@@ -190,7 +191,7 @@ class IEvent(metaclass=ABCMeta):
       case _ExportMode.SERVER:
         return self._state_server.notMatch(Byte(-1))
       case _ExportMode.ENTITY:
-        return ISelector.S(tag=self._tag_entity).UnlessEntity()
+        return Selector.S(tag=self._tag_entity).UnlessEntity()
 
   def setReturn(self,result:Value[Byte]):
     return IEvent._result.set(result)
@@ -216,13 +217,13 @@ class IEvent(metaclass=ABCMeta):
     return IEvent._result.isMatch(Byte(1))
   
   untick = Function()
-  untick += _objective_tick.score(ISelector.S()).Remove(1)
-  untick += _objective_tick.score(ISelector.S()).IfMatch(0) + Command.Tag.Remove(ISelector.S(), _ticking_tag)
+  untick += _objective_tick.score(Selector.S()).Remove(1)
+  untick += _objective_tick.score(Selector.S()).IfMatch(0) + Command.Tag.Remove(Selector.S(), _ticking_tag)
 
   def useTickTag(self,enter:Function,exit:Function,abort:Function):
     assert IEvent.mode is _ExportMode.ENTITY
-    enter += Command.Tag.Add(ISelector.S(), _ticking_tag)
-    enter += IEvent._objective_tick.score(ISelector.S()).Add(1)
+    enter += Command.Tag.Add(Selector.S(), _ticking_tag)
+    enter += IEvent._objective_tick.score(Selector.S()).Add(1)
 
     exit += IEvent.untick.Call()
     abort += IEvent.untick.Call()
@@ -230,7 +231,7 @@ class IEvent(metaclass=ABCMeta):
   @property
   def hasTickTag(self):
     assert IEvent.mode is _ExportMode.ENTITY
-    return ISelector.S(tag=_ticking_tag).IfEntity()
+    return Selector.S(tag=_ticking_tag).IfEntity()
 
   @property
   @abstractmethod
@@ -324,7 +325,7 @@ class IEvent(metaclass=ABCMeta):
     FunctionTag.tick.append(tick)
     _tick = Function()
 
-    tick += ISelector.E(tag=_ticking_tag).As().At(ISelector.S()) + _tick.Call()
+    tick += Selector.E(tag=_ticking_tag).As().At(Selector.S()) + _tick.Call()
 
     abort.description = """イベントを中断する
 該当エンティティとして実行すること"""
@@ -450,7 +451,7 @@ class WaitFunctionCall(IEvent):
   def main_entity(self, func: Function, abort: Function, tick: Function, init: Function, resultless: bool) -> Function:
     exit = Function()
     # TODO: selectorをentity_type等で絞っておくことで検索効率を上げる
-    self.trigger += ISelector.E(tag=self._tag_entity).As().At(ISelector.S()) + exit.Call()
+    self.trigger += Selector.E(tag=self._tag_entity).As().At(Selector.S()) + exit.Call()
     exit += self.succeed
     return exit
 
@@ -941,7 +942,7 @@ class ParallelAny(IComposit):
     abt = Function()
     for sub in self.subs:
       f = Function()
-      func += ISelector.S(tag=self._tag_entity).IfEntity() + f.Call()
+      func += Selector.S(tag=self._tag_entity).IfEntity() + f.Call()
       end = sub._export(f,abt,init,tick,False)
       if not sub.isInfinite:
         end += count.Remove(1)
@@ -982,7 +983,7 @@ class ParallelAll(IComposit):
     abt = Function()
     for sub in self.subs:
       f = Function()
-      func += ISelector.S(tag=self._tag_entity).IfEntity() + f.Call()
+      func += Selector.S(tag=self._tag_entity).IfEntity() + f.Call()
       end = sub._export(f,abt,init,tick,False)
       if not sub.isInfinite:
         end += count.Remove(1)
