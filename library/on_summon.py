@@ -3,7 +3,7 @@
 summonコマンド呼び出し直後(コマンドによって生成されたエンティティ)と、毎チックのはじめ(自然スポーンしたエンティティ)に対し実行する
 """
 from library.on_install import OnInstall
-from datapack import Command, ICommand, Selector, Function, FunctionTag
+from datapack import Command, ICommand, Function, FunctionTag, Selector
 
 _summoned_tag = '__summon__'
 

@@ -1,7 +1,8 @@
 from typing import Literal
-from datapack import Command, Byte, Compound, Selector, INbt, Item, List, Function, Position, Str, Value
+from datapack import Command, Byte, Compound, INbt, Item, List, Function, Position, Selector, Str, Value
 from id import gen_id
 from library.item_frame_hook import ItemFrameHook
+from mcpath import McPath
 from txbt import IEvent, InitAbort, Run, WaitFunctionCall
 
 class ItemFrame:
@@ -26,7 +27,7 @@ class ItemFrame:
     self.__class__.init()
     self.id = gen_id(prefix='IFH.')
     self.tags = [self.id,'IFH']
-    self.selector = Selector.E('item_frame',tag=self.id,limit=1)
+    self.selector = Selector.E(McPath('item_frame'),tag=self.id,limit=1)
     self.selfselector = Selector.S(tag=self.id)
     self._fixed = self.selector.nbt['Fixed',Byte]
     self._invulnerable = self.selector.nbt['Invulnerable',Byte]
@@ -87,13 +88,13 @@ class ItemFrame:
     return self.selector.nbt["ItemRotation",Byte]
 
   def ItemCondition(self,item:Item):
-    return self.selector.filter(nbt=self._getnbt(item)).IfEntity()
+    return (self.selector & Selector.E(nbt=self._getnbt(item))).IfEntity()
 
   def RotateCondition(self,rotation:Literal[0,1,2,3,4,5,6,7]):
-    return self.selector.filter(nbt=self._getnbt(rotation=rotation)).IfEntity()
+    return (self.selector & Selector.E(nbt=self._getnbt(rotation=rotation))).IfEntity()
 
   def ItemRotateCondition(self,item:Item,rotation:Literal[0,1,2,3,4,5,6,7]):
-    return self.selector.filter(nbt=self._getnbt(item,rotation)).IfEntity()
+    return (self.selector & Selector.E(nbt=self._getnbt(item,rotation))).IfEntity()
 
   def WaitUntilPut(self):
     """何かしらのアイテムが入れられるまで待機
@@ -106,7 +107,7 @@ class ItemFrame:
     """特定のアイテムが入れられるまで待機
     """
     func = Function()
-    ItemFrame.onIn += self.selfselector.filter(nbt=self._getnbt(item)).IfEntity() + func.Call()
+    ItemFrame.onIn += (self.selfselector & Selector.S(nbt=self._getnbt(item))).IfEntity() + func.Call()
     return WaitFunctionCall(func)
 
   def WaitUntilPick(self):
@@ -127,13 +128,13 @@ class ItemFrame:
     """特定の角度になるまで待機
     """
     func = Function()
-    ItemFrame.onRot += self.selfselector.filter(nbt=self._getnbt(rotation=rotation)).IfEntity() + func.Call()
+    ItemFrame.onRot += (self.selfselector & Selector.S(nbt=self._getnbt(rotation=rotation))).IfEntity() + func.Call()
     return WaitFunctionCall(func)
 
   def WaitUntilMatchState(self,item:Item,rotation:Literal[0,1,2,3,4,5,6,7]):
     """特定のアイテムが入った状態で特定の角度になるまで待機
     """
     func = Function()
-    ItemFrame.onRot += self.selfselector.filter(nbt=self._getnbt(item,rotation)).IfEntity() + func.Call()
-    ItemFrame.onIn += self.selfselector.filter(nbt=self._getnbt(item,rotation)).IfEntity() + func.Call()
+    ItemFrame.onRot += (self.selfselector & Selector.S(nbt=self._getnbt(item,rotation))).IfEntity() + func.Call()
+    ItemFrame.onIn += (self.selfselector & Selector.S(nbt=self._getnbt(item,rotation))).IfEntity() + func.Call()
     return WaitFunctionCall(func)

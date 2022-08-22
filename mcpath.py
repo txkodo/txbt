@@ -93,3 +93,7 @@ class McPath:
     assert self.istag
     return root/'data'/self._namespace/'tags/functions'/('/'.join(self._parts)+'.json')
 
+  def predicate(self,root:Path):
+    assert self.istag
+    return root/'data'/self._namespace/'predicates'/('/'.join(self._parts)+'.json')
+
