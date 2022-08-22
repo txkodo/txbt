@@ -292,7 +292,7 @@ class Selector(ISelector,metaclass=ABCMeta):
   def __and__(self:_Selector,other:_Selector):
     return self.merge(other)
 
-  def merge(self:_Selector,other:_Selector):
+  def merge(self:_Selector,other:_Selector) -> _Selector:
     def error():
       raise ValueError(f'failed to merge selectors "{self}" and "{other}".')
 
@@ -400,7 +400,7 @@ class Selector(ISelector,metaclass=ABCMeta):
     yaw = merge_range_or_none(self._yaw,other._yaw)
     level = merge_range_or_none(self._level,other._level)
 
-    result = Selector(
+    result = self.__class__(
       type,
       name,
       tag,
@@ -431,6 +431,9 @@ class Selector(ISelector,metaclass=ABCMeta):
 
   def ToPlayer(self):
     return 
+
+  def isSingle(self) -> bool:
+    return self._limit == 1
 
   @staticmethod
   def S(
@@ -746,3 +749,6 @@ class NameSelector(ISelector):
   
   def expression(self) -> str:
     return self.player
+
+  def isSingle(self) -> bool:
+    return True

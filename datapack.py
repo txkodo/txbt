@@ -23,8 +23,8 @@ class Position:
     y:float
     z:float
 
-    @abstractmethod
     @classmethod
+    @abstractmethod
     def prefix(cls) -> str:
       pass
 
@@ -107,6 +107,11 @@ class ISubCommandSegment(metaclass=ABCMeta):
 
   def export_subcommand(self) -> str:
     raise NotImplementedError
+
+  def copy_without_accessor(self):
+    result = copy(self)
+    result.accessor = None
+    return result
 
 class IStoreSubCommandSegment(ISubCommandSegment):
   _store_nbt:Byte
@@ -454,6 +459,7 @@ class ICommand(metaclass=ICommandMeta):
 
     # 先頭のコマンド
     head = self._copy_without_accessor()
+    head.subcommands = []
     if store_count != 0:
       head = IStoreSubCommandSegment.store_nbt.storeResult(1) + head
 
@@ -473,13 +479,12 @@ class ICommand(metaclass=ICommandMeta):
         if accesssor is None:
           f += SubCommand(sub) + (sub.store_nbt.getValue() if sub.is_result else sub.store_nbt.isExists())
         else:
-          f += accesssor(SubCommand(sub) + (sub.store_nbt.getValue() if sub.is_result else sub.store_nbt.isExists()))
+          f += accesssor(SubCommand(sub.copy_without_accessor()) + (sub.store_nbt.getValue() if sub.is_result else sub.store_nbt.isExists()))
         head = f.Call()
       elif accesssor is not None:
-        head = accesssor(SubCommand(sub) + head)
+        head = accesssor(SubCommand(sub.copy_without_accessor()) + head)
       else:
         head = SubCommand(sub) + head
-
     return head
 
   def export(self) -> str:
@@ -508,23 +513,19 @@ class SubCommand:
   def __add__(self,other:SubCommand|ICommand):
     if isinstance(other,ConditionSubCommand):
       result = ConditionSubCommand()
-      result.subcommands.extend(self.subcommands)
-      result.subcommands.extend(other.subcommands)
+      result.subcommands = self.subcommands + other.subcommands
       return result
     elif isinstance(other,SubCommand):
       result = SubCommand()
-      result.subcommands.extend(self.subcommands)
-      result.subcommands.extend(other.subcommands)
+      result.subcommands = self.subcommands + other.subcommands
       return result
     elif isinstance(other,Command.Function.Function):
       result = Command.Function.Function(other.holder)
-      result.subcommands.extend(self.subcommands)
-      result.subcommands.extend(other.subcommands)
+      result.subcommands = self.subcommands + other.subcommands
       return result
     else:
       result = copy(other)
-      result.subcommands.extend(self.subcommands)
-      result.subcommands.extend(other.subcommands)
+      result.subcommands = self.subcommands + other.subcommands
       return result
 
   def __iadd__(self,other:SubCommand):
@@ -1536,7 +1537,7 @@ class IDatapackLibrary:
     raise NotImplementedError
 
 class _DatapackMeta(type):
-  _default_path= McPath('minecraft:txbt')
+  _default_path= McPath('minecraft:pydp')
 
   @property
   def default_path(cls) -> McPath:
@@ -1665,7 +1666,7 @@ class Datapack(metaclass=_DatapackMeta):
       p.export(path)
 
     for f in Function.functions:
-      # function.taggedをTrueにする
+      # functionのアクセッサを展開
       f.flatten_accessor()
 
     for f in FunctionTag.functiontags:
@@ -1697,6 +1698,23 @@ class Datapack(metaclass=_DatapackMeta):
       relpath = p.relative_to(path)
       pathstrs.append(str(relpath))
     pydptxt.write_text('\n'.join(pathstrs))
+  
+  @staticmethod
+  def mkdir(path:Path):
+    """
+    自動生成したパス一覧に追加する
+    """
+    paths:list[Path] = []
+    _path = path
+    while not _path.exists():
+      paths.append(_path)
+      _path = _path.parent
+    Datapack.created_paths.extend(reversed(paths))
+
+    if path.is_dir():
+      path.mkdir(parents=True,exist_ok=True)
+    else:
+      path.parent.mkdir(parents=True,exist_ok=True)
 
 
 class _FuncState(Enum):
@@ -1955,16 +1973,9 @@ class Function:
   def export_function(self,path:Path,commands:list[str]):
     path = self.path.function(path)
 
-    paths:list[Path] = []
-    _path = path
-    while not _path.exists():
-      paths.append(_path)
-      _path = _path.parent
 
     if self.delete_on_regenerate:
-      Datapack.created_paths.extend(reversed(paths))
-
-    path.parent.mkdir(parents=True,exist_ok=True)
+      Datapack.mkdir(path)
 
     if Datapack.export_imp_doc:
       commands.insert(0,self._imp_doc())
@@ -2778,6 +2789,13 @@ class ISelector(IScoreHolder):
   def jsontext(self) -> jsontextvalue:
     return {"selector":self.expression()}
 
+  @abstractmethod
+  def isSingle(self) -> bool:
+    """
+    limit=1 などで該当エンティティが一体のみであることが保証されているかどうか
+    """
+    pass
+
 class ScoreHolder(IScoreHolder):
   """
   存在しないが、スコアを持つダミーエンティティ
@@ -3293,7 +3311,9 @@ class IPredicate:
     self._path = path
 
   def export(self,datapack_path:Path):
-    self.path.predicate(datapack_path).write_text(
+    path = self.path.predicate(datapack_path)
+    Datapack.mkdir(path)
+    path.write_text(
       json.dumps(self.export_dict()),
       encoding='utf8'
     )
@@ -3312,14 +3332,25 @@ class IPredicate:
 
 class Predicate:
   class EntityScores(IPredicate):
-    def __init__(self,scores:dict[Objective,int|tuple[int,int]],entity:Literal['this','direct_killer','killer','killer_player']='this',path:McPath|None=None) -> None:
-      super().__init__()
+    def __init__(self,scores:dict[Objective,int|tuple[int|None,int|None]],entity:Literal['this','direct_killer','killer','killer_player']='this',path:McPath|None=None) -> None:
+      super().__init__(path)
       self.entity = entity
       self.scores = scores
 
     def export_dict(self) -> dict[str,Any]:
+
+      def value(value:int|tuple[int|None,int|None]):
+        if isinstance(value,int):
+          return value
+        result:dict[str,int] = {}
+        if isinstance(value[0],int):
+          result['min'] = value[0]
+        if isinstance(value[1],int):
+          result['max'] = value[1]
+        return result
+
       return {
         'condition':'entity_scores',
         'entity':self.entity,
-        'scores':{ k.id: (v if isinstance(v,int) else {'min':v[0],'max':v[0]} ) for k,v in self.scores.items()}
+        'scores':{ k.id: value(v) for k,v in self.scores.items()}
         }
