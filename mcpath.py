@@ -5,11 +5,21 @@ from typing_extensions import Self
 
 class McPathError(Exception):pass
 
+DEFAULT_NAMESPACE = 'minecraft'
+
 class McPath:
-  default_namespace = 'minecraft'
+  __slots__ = ('_namespace', '_parts', '_istag')
   _namespace:str
   _parts:list[str]
   _istag:bool
+
+  def __eq__(self, other:object):
+    if not isinstance(other,McPath):
+      return False
+    return self._namespace == other._namespace and self._parts == other._parts and self._istag == other._istag
+
+  def __hash__(self) -> int:
+    return hash((self._namespace,*self.parts,self._istag))
 
   def __new__(cls: type[Self],mcpath:str|McPath|None=None) -> Self:
     match mcpath:
@@ -17,7 +27,7 @@ class McPath:
         return mcpath
       case None:
         self = super().__new__(cls)
-        self._namespace = cls.default_namespace
+        self._namespace = DEFAULT_NAMESPACE
         self._parts = []
         return self
       case str():
@@ -29,7 +39,7 @@ class McPath:
         self._namespace = match.groups()[1] or 'minecraft'
         self._parts = match.groups()[2].split('/')
         return self
-  
+
   @property
   def istag(self):
     return self._istag
@@ -39,7 +49,7 @@ class McPath:
 
   @property
   def str(self) -> str:
-    if self._namespace == self.default_namespace:
+    if self._namespace == DEFAULT_NAMESPACE:
       if self.istag:
         return '#' + '/'.join(self.parts)
       if self.parts:

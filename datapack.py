@@ -1700,16 +1700,17 @@ class Datapack(metaclass=_DatapackMeta):
     pydptxt.write_text('\n'.join(pathstrs))
   
   @staticmethod
-  def mkdir(path:Path):
+  def mkdir(path:Path,delete_on_regenerate:bool=True):
     """
-    自動生成したパス一覧に追加する
+    ディレクトリを生成する
     """
-    paths:list[Path] = []
-    _path = path
-    while not _path.exists():
-      paths.append(_path)
-      _path = _path.parent
-    Datapack.created_paths.extend(reversed(paths))
+    if delete_on_regenerate:
+      paths:list[Path] = []
+      _path = path
+      while not _path.exists():
+        paths.append(_path)
+        _path = _path.parent
+      Datapack.created_paths.extend(reversed(paths))
 
     if path.is_dir():
       path.mkdir(parents=True,exist_ok=True)
@@ -1974,8 +1975,7 @@ class Function:
     path = self.path.function(path)
 
 
-    if self.delete_on_regenerate:
-      Datapack.mkdir(path)
+    Datapack.mkdir(path,self.delete_on_regenerate)
 
     if Datapack.export_imp_doc:
       commands.insert(0,self._imp_doc())
@@ -3306,9 +3306,9 @@ class OhMyDat(IDatapackLibrary):
 
 class IPredicate:
   predicates:list[IPredicate] = []
-  def __init__(self,path:McPath|None=None) -> None:
+  def __init__(self,path:str|McPath|None=None) -> None:
     IPredicate.predicates.append(self)
-    self._path = path
+    self._path = McPath(path)
 
   def export(self,datapack_path:Path):
     path = self.path.predicate(datapack_path)
@@ -3331,8 +3331,20 @@ class IPredicate:
     pass
 
 class Predicate:
+  class Exists(IPredicate):
+    """
+    すでに存在するpredicateを表すクラス
+
+    他のデータパックのpredicateを使用する際等に用いる
+    """
+    def __init__(self, path: str|McPath) -> None:
+      super().__init__(path)
+
+  def export(self,datapack_path:Path):
+    pass
+
   class EntityScores(IPredicate):
-    def __init__(self,scores:dict[Objective,int|tuple[int|None,int|None]],entity:Literal['this','direct_killer','killer','killer_player']='this',path:McPath|None=None) -> None:
+    def __init__(self,scores:dict[Objective,int|tuple[int|None,int|None]],entity:Literal['this','direct_killer','killer','killer_player']='this',path:str|McPath|None=None) -> None:
       super().__init__(path)
       self.entity = entity
       self.scores = scores
