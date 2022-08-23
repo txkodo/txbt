@@ -1,10 +1,8 @@
 from typing import Literal
-from datapack import Command, Byte, Compound, INbt, Item, List, Function, Position, Str, Value
 from id import gen_id
-from library.item_frame_hook import ItemFrameHook
-from mcpath import McPath
-from selector import Selector
 from txbt import IEvent, InitAbort, Run, WaitFunctionCall
+from datapack import *
+from datapack.item_frame_hook import ItemFrameHook
 
 class ItemFrame:
   onOut:Function

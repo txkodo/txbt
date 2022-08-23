@@ -4,12 +4,9 @@ from copy import copy
 from enum import Enum, auto
 from random import randint
 from typing_extensions import Self
-from datapack import Byte, Command, Compound, ConditionSubCommand, FunctionTag, ICommand, OhMyDat, Scoreboard, Function, Objective, StorageNbt, Value
+from datapack import Byte, Command, Compound, ConditionSubCommand, FunctionTag, ICommand, OhMyDat, Scoreboard, Function, Objective, StorageNbt, Value, McPath, Selector
 from id import gen_id
-from library.on_install import OnInstall
-from mcpath import McPath
-from selector import Selector
-
+from datapack.installer import Installer
 
 # class TxBtDat(IDatapackLibrary):
 #   using = False
@@ -87,8 +84,8 @@ class ScoreboardIterator:
         case _ExportMode.ENTITY:
           obj = Objective(gen_id(prefix='txbt:'))
           score = obj.score(Selector.S())
-          OnInstall.install_func += obj.Add()
-          OnInstall.uninstall_func += obj.Remove()
+          Installer.OnInstall += obj.Add()
+          Installer.OnUninstall += obj.Remove()
         case _ExportMode.SERVER:
           score = IEvent.objective.score(Selector.Player(IEvent.nextId()))
       self.scores.append(score)
@@ -112,11 +109,11 @@ class IEvent(metaclass=ABCMeta):
   objective = Objective('txbt')
   _objective_tick = Objective('txbt.tick')
 
-  OnInstall.install_func += objective.Add()
-  OnInstall.install_func += _objective_tick.Add()
+  Installer.OnInstall += objective.Add()
+  Installer.OnInstall += _objective_tick.Add()
 
-  OnInstall.uninstall_func += objective.Remove()
-  OnInstall.uninstall_func += _objective_tick.Remove()
+  Installer.OnUninstall += objective.Remove()
+  Installer.OnUninstall += _objective_tick.Remove()
 
   mode:_ExportMode
   _storage = StorageNbt("txbt:")
