@@ -2,7 +2,8 @@ from __future__ import annotations
 from abc import ABCMeta
 import re
 from typing import Literal, TypeVar
-from datapack import Compound, IPredicate, ISelector, Objective, Position, Value
+from uuid import UUID
+from datapack import Compound, IPredicate, ISelector, McUUID, Objective, Position, Value
 from mcpath import McPath
 from util import float_to_str
 
@@ -743,13 +744,28 @@ class _SelfSelector(Selector):
 class NameSelector(ISelector):
   """
   プレイヤー名を直接使うセレクタ
-  txkodo[gamemode=survival]
   """
   def __init__(self,player:str):
+    if not re.fullmatch('[0-9a-zA-Z_]{3,16}',player):
+      raise ValueError('Only [0-9a-zA-Z_] is allowed for player name. And needs to consist of 3-16 characters')
     self.player = player
   
   def expression(self) -> str:
     return self.player
+
+  def isSingle(self) -> bool:
+    return True
+
+class UUIDSelector(ISelector):
+  """
+  UUIDを直接使うセレクタ
+  0-0-0-0-0
+  """
+  def __init__(self,uuid:McUUID):
+    self.uuid = uuid
+
+  def expression(self) -> str:
+    return str(self.uuid)
 
   def isSingle(self) -> bool:
     return True

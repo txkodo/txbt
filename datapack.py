@@ -11,9 +11,60 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+from uuid import UUID, uuid4
 
 from mcpath import McPath
 from util import float_to_str, gen_id
+
+
+
+
+
+class McUUID:
+  __slots__ = ('_bytes')
+
+  def __init__(self,arg:str|tuple[int,int,int,int]|None=None) -> None:
+    match arg:
+      case str():
+        if '-' in arg:
+          arg = ''.join( b.zfill(l) for b,l in zip(arg.split('-'),(8,4,4,4,12)))
+        uuid = UUID(arg)
+      case tuple():
+        num = 0
+        for i in arg:
+          if not 0 <= i < 2**32:
+            raise ValueError('ints items must be in range 0..2**32-1')
+          num = (num << 32) + i
+        uuid = UUID(int=num)
+      case None:
+        uuid = uuid4()
+    self._bytes = uuid.bytes
+
+  def __hash__(self) -> int:
+    return hash(self._bytes)
+
+  def __eq__(self, __o: object) -> bool:
+    if isinstance(__o,McUUID):
+      return self._bytes == __o._bytes
+    return False
+
+  def __str__(self):
+    bs = self._bytes
+    i = 0
+    result:list[str] = []
+    for j in (4,2,2,2,6):
+      result.append(f'{int.from_bytes(bs[i:i+j],"big"):x}')
+      i += j
+    return '-'.join(result)
+
+  def intArray(self):
+    bs = self._bytes
+    ints = [Int(int.from_bytes(bs[i:i+4],"big",signed=True)) for i in range(0,16,4)]
+    return IntArray(ints)
+
+
+
+
 
 
 class Position:
@@ -2486,6 +2537,9 @@ class Value(Generic[CO_NBT]):
     self._type = type
     self._tostr = tostr
     self.value = value
+  
+  def __str__(self):
+    return self.str()
 
   def str(self):
     return self._tostr(self.value)
