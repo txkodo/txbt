@@ -177,11 +177,13 @@ class Selector(ISelector,metaclass=ABCMeta):
         type = str(type)
         return f'{key}=' + ('' if flag else '!') + (f'"{type}"' if re.match('[! ]',type) else type)
       return _inner
-
-    selectors.extend(map(decorate('type'),[ (str(k), v) for k,v in self._type.items()]))
+    
+    # ターゲットセレクタ グループA
     selectors.extend(map(decorate('name'),self._name.items()))
-    selectors.extend(map(decorate('tag') ,self._tag.items()))
+    selectors.extend(map(decorate('gamemode'),self._gamemode.items()))
     selectors.extend(map(decorate('team'),self._team.items()))
+    selectors.extend(map(decorate('type'),[ (str(k), v) for k,v in self._type.items()]))
+    selectors.extend(map(decorate('tag') ,self._tag.items()))
 
     if self._scores:
       score_map:dict[str,str] = {}
@@ -205,24 +207,9 @@ class Selector(ISelector,metaclass=ABCMeta):
       selectors.append(f'advancements={{{",".join(f"{k}={v}" for k,v in advancement_map.items())}}}')
 
     selectors.extend(map(decorate('predicate'),[(str(k.path),v) for k,v in self._predicate.items()]))
-    selectors.extend(map(decorate('gamemode'),self._gamemode.items()))
     selectors.extend(map(decorate('nbt'),[(str(k.str()),v) for k,v in self._nbt.items()]))
 
-    if self._origin:
-      for k,v in zip('xyz', self._origin.tuple()):
-        selectors.append(f'{k}={float_to_str(v)}')
-
-    if self._dx:selectors.append(f'dx={float_to_str(self._dx)}')
-    if self._dy:selectors.append(f'dy={float_to_str(self._dy)}')
-    if self._dz:selectors.append(f'dz={float_to_str(self._dz)}')
-
-    if self._distance:
-      match self._distance:
-        case float() as v:
-          selectors.append(f'distance={float_to_str(v)}')
-        case (s,e):
-          selectors.append(f'distance={float_to_str(s)}..{float_to_str(e)}')
-
+    # ターゲットセレクタ グループB
     if self._pitch:
       match self._pitch:
         case float() as v:
@@ -244,9 +231,23 @@ class Selector(ISelector,metaclass=ABCMeta):
         case (s,e):
           selectors.append(f'level={s}..{e}')
 
-    self._limit
-    self._sort
+    # ターゲットセレクタ グループC
+    if self._origin:
+      for k,v in zip('xyz', self._origin.tuple()):
+        selectors.append(f'{k}={float_to_str(v)}')
 
+    if self._dx:selectors.append(f'dx={float_to_str(self._dx)}')
+    if self._dy:selectors.append(f'dy={float_to_str(self._dy)}')
+    if self._dz:selectors.append(f'dz={float_to_str(self._dz)}')
+
+    if self._distance:
+      match self._distance:
+        case float() as v:
+          selectors.append(f'distance={float_to_str(v)}')
+        case (s,e):
+          selectors.append(f'distance={float_to_str(s)}..{float_to_str(e)}')
+
+    # ターゲットセレクタ グループD
     match self._mode:
       case 'self':
         selector = '@s'
